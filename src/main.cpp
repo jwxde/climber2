@@ -329,6 +329,8 @@ void command_resistance_level(char *cmd) {
   commander->scalar(&resistance_level, cmd);
 }
 
+LowPassFilter converter_triggered(1.0/5000);
+
 void loop() {
   // For now, just try to check the sensors are working ok.
   if(initOk) {
@@ -338,19 +340,20 @@ void loop() {
     supply_sensor_update(supply_sensor);
 
     // Catch some power issues
-    if(false && supply_sensor->v_motor > 33.0 || supply_sensor->v_motor < 10.0 && supply_sensor->i_battery > 1) {
+    if(false && supply_sensor->v_motor > 30.0 || supply_sensor->v_motor < 10.0 && supply_sensor->i_battery > 1) {
       // Our regulation seems to fail, shut down motor
       motor->disable();
       Serial.println("Over or under voltage, motor disabled, shutdown");
       initOk = false;
     }
-    if(abs(supply_sensor->i_battery) > 12.0) {
+    if(false & abs(supply_sensor->i_battery) > 12.0) {
       motor->disable();
       converter_enable(converter, false);
       Serial.println("Over current, motor and converter disabled");
       initOk = false;
     }
 
+    #if false
     float inv_converter_duty = 2 + pid_v_motor(27.0 - supply_sensor->v_motor);
     int converter_level = 4096/inv_converter_duty;
     // Limit again for safety -- the critical part is the low end so that we
@@ -367,6 +370,49 @@ void loop() {
     } else {
       converter_enable(converter, !low_efficiency);
     };
+    #endif
+
+    #if false
+    // Simple hysterisis loop to keep supply voltage within a band.
+    // Band needs to be wide enough to suprress cycling.
+    if(converter->enabled && supply_sensor->v_motor > 26.0) {
+      converter_enable(converter, false);
+    }
+    if(!converter->enabled && supply_sensor->v_motor < 23.0) {
+      converter_enable(converter, true);
+    }
+    #endif
+
+    #if true
+    // Simple hysterisis loop to prevent idling of the converter. After we decide to
+    // switch on ("trigger") the converter, we want to give the current some time to
+    // develop to prevent immediate shutdown. So we use a low pass filtered activation
+    // signal that decays over about 4 PWM cycles.
+    //
+    // TODO: How would we detect that our duty cycle needs adjustment? Wouldn't it have
+    // to depend on the input (battery) voltage?
+    float triggered = 0.0;
+    if(!converter->enabled && (supply_sensor->v_motor < 26.0 || supply_sensor->v_motor > 28.0)) {
+      // TODO: Improvement: Don't switch the converter on immediately.
+      // Instead, schedule the enablement to happen when the converter enters the right phase.
+      // When we want to bring the voltage up,
+      // that would be when the inductor gets connected to the low side the next time.
+      // When we want to bring the voltage down, 
+      // that would be when the inductor gets connected to the high side the next time.
+      // We also don't want to mess with the phase of the converter, so best would be to
+      // schedule an interrupt for the interesting transition of the converter pin.
+       converter_enable(converter, true);
+       triggered = 1.0;
+    }
+    if(converter->enabled && converter_triggered(triggered) < 0.2) {
+      // Converter is on and had enough time to develop a current pattern
+      if(abs(supply_sensor->i_battery) < 2.0) {
+        converter_enable(converter, false);
+      }
+    }    
+    #endif
+
+
 
     if(resistance_level > 0) {
       switch(motor->controller) {

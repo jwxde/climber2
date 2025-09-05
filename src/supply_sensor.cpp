@@ -12,12 +12,12 @@ supply_sensor_t* supply_sensor_create() {
   s->i_battery_scale = 1/0.100 * 5.0/3.3;
   // we have a 22k vs 1k voltage divider, then we apply a measured correction factor
   s->v_motor_scale = 23.0;
-  s->v_motor_f = LowPassFilter(.05);
-  // We want to average batty current over sevaral PWM cycles.
+  s->v_motor_f = LowPassFilter(.0001);
+  // We want to average batty current over one or two PWM cycles.
   // We will get about 5 samples per PWM cycle (max).
-  // One PWM cycle is 50 usecs. So 0.05 corresponds to 100 PWM cycles.
-  s->i_battery_f = LowPassFilter(.05);
-  s->i_battery_variance_f = LowPassFilter(.05);
+  // One PWM cycle is 50 usecs. So 0.0001 corresponds to 2 PWM cycles.
+  s->i_battery_f = LowPassFilter(.0001);
+  s->i_battery_variance_f = LowPassFilter(.0001);
   return s;
 }
 
@@ -27,6 +27,8 @@ void supply_sensor_update(supply_sensor_t* s) {
   ADCResults adcResults = engine.getLastResults();
 
   // We filter the raw values
+  // Be aware that the channel numbers correspond to the hardware channel numbers
+  // which do not match with the pin labels for all boards
   float i_battery_raw_now = adcResults.ch4 * 3.3f/256;
   s->i_battery_raw = s->i_battery_f(i_battery_raw_now);
   s->i_battery = (s->i_battery_raw - s->i_battery_offset) * s->i_battery_scale;
