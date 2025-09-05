@@ -9,6 +9,8 @@
 
 #include <current_sense/hardware_specific/rp2040/rp2040_mcu.h>
 
+#define SIGNAL_PIN D22
+
 // We construct these later so that we can debug output
 
 BLDCDriver3PWM *driver;
@@ -141,6 +143,11 @@ void setup() {
   SPI.setTX(D11); // MOSI
   // Does SimpleFOC take care of handling CS?
   SPI.begin();
+
+  // Set up cycle indicator signal
+
+  gpio_init(SIGNAL_PIN);
+  gpio_set_dir(SIGNAL_PIN, GPIO_OUT);
 
   // Set up power converter
   // On Adafruit Metro, be sure to put the RX/TX switch to RX=0, TX=1
@@ -325,6 +332,8 @@ void command_resistance_level(char *cmd) {
 void loop() {
   // For now, just try to check the sensors are working ok.
   if(initOk) {
+    gpio_put(SIGNAL_PIN, true);
+
     motor->loopFOC();
     supply_sensor_update(supply_sensor);
 
@@ -382,6 +391,8 @@ void loop() {
       }
     }
    
+    gpio_put(SIGNAL_PIN, false);
+
     motor->move();
 
     my_monitor();
