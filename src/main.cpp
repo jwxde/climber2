@@ -1,6 +1,8 @@
 #include <Arduino.h>
 #include <SimpleFOC.h>
+#include <MyCurrentSense.h>
 
+#include "adc_engine.h"
 #include "supply_sensor.h"
 
 // For convverter
@@ -16,7 +18,7 @@
 BLDCDriver3PWM *driver;
 BLDCMotor *motor;
 MagneticSensorSPI *sensor;
-InlineCurrentSense *currentSense;
+MyCurrentSense *currentSense;
 Commander *commander;
 
 void doMotor(char* cmd) {
@@ -100,11 +102,14 @@ void converter_enable(converter_t *c, boolean enabled) {
   gpio_put(c->enable_pin, c->enabled);
 }
 
-extern RP2040ADCEngine engine; 
 
 
-converter_t *converter;
-supply_sensor_t *supply_sensor;
+int raw_i;
+int raw_v;
+
+adc_engine_t* adc_engine;
+converter_t* converter;
+supply_sensor_t* supply_sensor;
 
 void converterInfo(char *cmd) {
   if (strlen(cmd) > 0) {
@@ -124,6 +129,18 @@ void command_velocity_pid(char *cmd) { commander->pid(&motor->PID_velocity, cmd)
 void command_angle_pid(char *cmd) { commander->pid(&motor->P_angle, cmd); }
 
 float angle_0 = 0;
+
+// For each cycle of the converter PWM, we kick of a new ADC run.
+// And we collect the data that resulted from the previous run.
+
+void kickOffAdcConversion() {
+  // TODO: Check that the previous run finished as expected.
+  if(pwm_get_irq_status_mask() && (0x1 << converter->slice_num)) {
+    pwm_clear_irq(converter->slice_num);
+    adc_engine_run(adc_engine);
+    adc_engine_collect(adc_engine);
+  }
+}
 
 void setup() {
   // put your setup code here, to run once:
@@ -186,22 +203,11 @@ void setup() {
   pwm_set_enabled(converter->slice_num, true);
   converter_enable(converter, true);
 
-  // We also want to use some of the ADC channels.
-  // As the currentsense module hogs the complete ADC infra structure, our only chance
-  // is to register our channels of interest before the currentsense instance
-  // gets initialized. The second initialization will then be a noop.
-  // We need to also add the pins that the currentsense module is supposed to use.
+  // Setup ADC engine
+  adc_engine = adc_engine_create();
+  adc_engine_init(adc_engine);
 
-  engine.addPin(A0);
-  engine.addPin(A1);
-  engine.addPin(A2);
-  engine.addPin(A3);
-  engine.addPin(A4);
-
-  engine.init();
-  // The actual engine start will be done by the inline currentsense instance
-
-  supply_sensor = supply_sensor_create();
+  supply_sensor = supply_sensor_create(&adc_engine->i_bat, &adc_engine->i_bat2, &adc_engine->v_mot);
 
   SimpleFOCDebug::enable(&Serial);
 
@@ -212,9 +218,34 @@ void setup() {
   // Our motor has Kv about 50 rpm/V and L about 150 uH. Resistance wire to wire is 0.6 Ohms.
   motor = new BLDCMotor(6, 0.6, 50, 0.000150);
   sensor = new MagneticSensorSPI(AS5048_SPI, D9);
-  // We have ACS712 hall sensors, so we just specify the mV per Amp ratio.
+  // We have ACS712 hall sensors which we sample with 8 bit resolution.
   // We run the sensors at 3.3 V and have the 712 20 T type which has nominally 100 mV/A at 5 V.
-  currentSense = new InlineCurrentSense(100, A0, A1, A2);
+  currentSense = new MyCurrentSense(adc_engine->phases, 10.0*5.0/3.3, 3.3/2);
+
+  // Make sure the ADC engine runs AND collects input before going into FOC intiailization.
+  pwm_clear_irq(converter->slice_num);
+  pwm_set_irq_enabled(converter->slice_num, true);
+
+  irq_add_shared_handler(PWM_DEFAULT_IRQ_NUM(), kickOffAdcConversion, 128);
+  irq_set_enabled(PWM_DEFAULT_IRQ_NUM(), true);
+
+  // Wait for current sensing to work
+  for(int i = 0; i < 1000; i++) {
+    Serial.printf("Engine health: cycles=%d cycle_overlaps=%d sync_losses=%d", adc_engine->cycles, adc_engine->cycle_overlaps, adc_engine->sync_losses);
+    Serial.println();
+    Serial.printf("Engine health: last_control_count=%d last_transfer_count=%d", adc_engine->last_control_count, adc_engine->last_transfer_count);
+    Serial.println();
+    Serial.printf("DMA transfer count: control=%d, transfer=%d", 
+      dma_channel_hw_addr(adc_engine->dma_control_channel)->transfer_count,
+      dma_channel_hw_addr(adc_engine->dma_transfer_channel)->transfer_count);
+    Serial.println();
+    supply_sensor_update(supply_sensor);
+    Serial.printf("Battery current: %d or %f", adc_engine->i_bat, supply_sensor->i_battery);
+    Serial.println();
+    Serial.printf("Phase current A: %d or %f", adc_engine->phases[0], currentSense->getPhaseCurrents().a);
+    Serial.println();
+    busy_wait_ms(1);
+  }
 
   do {
     initOk = initFOC();
@@ -298,7 +329,7 @@ void my_monitor() {
   Serial.printf("%7.2f %7.2f %7.2f ", motor->target, motor->shaft_velocity, motor->shaft_angle);
   Serial.printf("%7.2f %7.2f ", motor->voltage.d, motor->voltage.q);
   Serial.printf("%7.0f %7.0f ", motor->current.q * 1000, motor->current.d * 1000);
-  Serial.printf("%9.4f %9.4f %7.2f", supply_sensor->i_battery, sqrt(supply_sensor->i_battery_variance), supply_sensor->v_motor);
+  Serial.printf("%9.4f %9.4f %7.2f", supply_sensor->i_battery, supply_sensor->i_battery_variance, supply_sensor->v_motor);
   Serial.println();
 }
 
@@ -411,8 +442,6 @@ void loop() {
       }
     }    
     #endif
-
-
 
     if(resistance_level > 0) {
       switch(motor->controller) {

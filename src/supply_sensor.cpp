@@ -1,12 +1,16 @@
 #include "supply_sensor.h"
 
-supply_sensor_t* supply_sensor_create() {
+supply_sensor_t* supply_sensor_create(int* i, long* i2, int* v) {
   supply_sensor_t* s = (supply_sensor_t*) malloc(sizeof(supply_sensor_t));
+  s->raw_i = i;
+  s->raw_i2 = i2;
+  s->raw_v = v;
   s->i_battery = 0;
   s->i_battery_variance = 0;
-  s->i_battery_raw = 0;
   s->v_motor = 0;
   s->i_battery_offset = 1.65;
+  s->i_battery_offset_int = s->i_battery_offset/3.3*0x1000;
+  s->i_battery_offset2_int = s->i_battery_offset_int * s->i_battery_offset_int;
   // Our current sensors have nominal 100 mV/A.
   // But we run them at 3.3V instead of 5, so we need to apply a correction  
   s->i_battery_scale = 1/0.100 * 5.0/3.3;
@@ -21,19 +25,8 @@ supply_sensor_t* supply_sensor_create() {
   return s;
 }
 
-extern RP2040ADCEngine engine; 
-
 void supply_sensor_update(supply_sensor_t* s) {
-  ADCResults adcResults = engine.getLastResults();
-
-  // We filter the raw values
-  // Be aware that the channel numbers correspond to the hardware channel numbers
-  // which do not match with the pin labels for all boards
-  float i_battery_raw_now = adcResults.ch4 * 3.3f/256;
-  s->i_battery_raw = s->i_battery_f(i_battery_raw_now);
-  s->i_battery = (s->i_battery_raw - s->i_battery_offset) * s->i_battery_scale;
-  s->v_motor = s->v_motor_f(adcResults.ch5 * 3.3f/256) * s->v_motor_scale;
-  // For the battery current variance, we filter the computed values.
-  float i_battery_deviation = (i_battery_raw_now - s->i_battery_raw) * s->i_battery_scale;
-  s->i_battery_variance = s->i_battery_variance_f(i_battery_deviation*i_battery_deviation);
+  s->i_battery = s->i_battery_f((*s->raw_i * 3.3f/4096.0f - s->i_battery_offset) * s->i_battery_scale);
+  s->i_battery_variance = s->i_battery_variance_f((*s->raw_i2 - 2*s->i_battery_offset_int*(*s->raw_i) + s->i_battery_offset2_int)*3.3f*3.3f/0x1000000 * s->i_battery_scale * s->i_battery_scale);
+  s->v_motor = s->v_motor_f(*s->raw_v * 3.3f/0x1000) * s->v_motor_scale;
 }
