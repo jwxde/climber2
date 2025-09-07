@@ -89,11 +89,12 @@ int initFOC() {
 
 int initOk = 0;
 
+enum converter_state { off, consuming, charging};
 struct converter {
   pin_size_t pwm_pin;
   pin_size_t enable_pin;
   int slice_num;
-  bool enabled;
+  converter_state state;
   float control;
   int level;
   float last_voltage_reached;
@@ -111,20 +112,58 @@ converter_t* converter_create() {
 }
 
 /**
- * We use an inverted output so that our PWM signal starts with a low phase.
- * Hence to get to duty ratio > 0.5 we need to puth the level below 0.5*range.
  * We want the control signal to be the inverse duty ratio.
+ * When consuming, we use an inverted PWM output so that our PWM signal starts with a low phase.
+ * Hence to get to duty ratio > 0.5 we need to put the level below 0.5*range.
+ * When charging, we use a non inverted PWM output so that our PWM signal starts with a high phase.
+ * Hence to get a duty ration > 0.5 wee need to put the level above 0.5*range.
  */
 void converter_apply(converter_t *converter) {
   if(converter->control > 4.0) converter->control = 4.0;
   if(converter->control < 1.25) converter->control = 1.25;
-  converter->level = 4096*(1.0 - 1.0/converter->control);
+  switch(converter->state) {
+    case converter_state::consuming:
+      converter->level = 0x1000*(1.0 - 1.0/converter->control); break;
+    case converter_state::charging:
+    case converter_state::off:
+      converter->level = 0x1000*(1.0/converter->control);
+  }
   pwm_set_chan_level(converter->slice_num, PWM_CHAN_A, converter->level);
 }
 
-void converter_enable(converter_t *c, boolean enabled) {
-  c->enabled = enabled;
-  pwm_set_chan_level(c->slice_num, PWM_CHAN_B, enabled? 0: 4096);
+void converter_set_state(converter_t *c, converter_state state) {
+  // We only support state transitions from off into one of the non off phases.
+  // Why? We want to change the polarity of the PWM signal between consuming
+  // and charging states. But the polarity becomes effective immediately
+  // which we don't want unless we are coming from an off state.
+  switch(c->state) {
+    case off:
+      switch(state) {
+        case consuming:
+          pwm_set_output_polarity(c->slice_num, true, true);
+          c->state = consuming;
+          break;
+        case charging:
+          pwm_set_output_polarity(c->slice_num, false, true);
+          c->state = charging;
+          break;
+        case off:
+          // nothing to do
+          break;
+      }
+      break;
+    default:
+      switch(state) {
+        case off:
+          c->state = off;
+          break;
+        default:
+          // Can't change anything now
+          break;
+      }
+  }
+  converter_apply(c);
+  pwm_set_chan_level(c->slice_num, PWM_CHAN_B, c->state == converter_state::off ? 4096 : 0);
 }
 
 void converter_init(converter_t* converter) {
@@ -157,7 +196,7 @@ void converter_init(converter_t* converter) {
   // But do not enable the converter yet.
   converter->control = 2.0;
   converter_apply(converter);
-  converter_enable(converter, false);
+  converter_set_state(converter, off);
 
   // Kick off the PWM slice. The SimpleFOC PWM driver will later (re) enable all slices.
   pwm_set_enabled(converter->slice_num, true);
@@ -231,7 +270,7 @@ void setup() {
 
   // Start out with the converter going full throttle
   // TODO: Change
-  converter_enable(converter, true);
+  converter_set_state(converter, consuming);
 
   // Setup ADC engine
   adc_engine = adc_engine_create();
@@ -303,14 +342,15 @@ void setup() {
 
   if(false) {
   // Shut down converter to find battery current 0 point
-  converter_enable(converter, false);
+  converter_set_state(converter, off);
   for(int n = 0; n < 100; n++) {
     supply_sensor_update(supply_sensor);
     sleep_ms(1);
   }
   supply_sensor->i_battery_offset = supply_sensor->i_battery_raw;
   Serial.printf("Set battery current measurement offset to %f V\n", supply_sensor->i_battery_offset);
-  converter_enable(converter, true);
+  converter_set_state
+(converter, consuming);
 
   // Second round of FOC to find battery current polarity
   // Create some power consumption by 
@@ -414,7 +454,7 @@ void loop() {
   }
   if(false & abs(supply_sensor->i_battery) > 12.0) {
     motor->disable();
-    converter_enable(converter, false);
+    converter_set_state(converter, off);
     Serial.println("Over current, motor and converter disabled");
     initOk = false;
   }
@@ -429,34 +469,34 @@ void loop() {
   // TODO: How would we detect that our duty cycle needs adjustment? Wouldn't it have
   // to depend on the input (battery) voltage?
   float triggered = 0.0;
-  if(!converter->enabled && (supply_sensor->v_motor < 26.0 || supply_sensor->v_motor > 29.0)) {
-    // TODO: Improvement: Don't switch the converter on immediately.
-    // Instead, schedule the enablement to happen when the converter enters the right phase.
-    // When we want to bring the voltage up,
-    // that would be when the inductor gets connected to the low side the next time.
-    // When we want to bring the voltage down, 
-    // that would be when the inductor gets connected to the high side the next time.
-    // We also don't want to mess with the phase of the converter, so best would be to
-    // schedule an interrupt for the interesting transition of the converter pin.
-      converter_enable(converter, true);
+  if(converter->state == off) {
+    if (supply_sensor->v_motor < 26.0) {
+      converter_set_state(converter, consuming);
       triggered = 1.0;
-  }
-  if(converter->enabled && converter_triggered(triggered) < 0.2) {
-    // Converter is on and had enough time to develop a current pattern
-    if(abs(supply_sensor->i_battery) < 2.0) {
-      converter_enable(converter, false);
-      // Take note of the voltage we reached and adjust accordingly
-      // In case there is no current flow through the coil, assume a power failure
-      // and choose a safe starting point for power return instead of adjusting
-      if(supply_sensor->i_battery_variance > 2.0) {
-        converter->last_voltage_reached = supply_sensor->v_motor;
-        converter->last_i = supply_sensor->i_battery;
-        converter->last_i2 = supply_sensor->i_battery_variance;
-        converter->control += pid_v_motor(27.0 - converter->last_voltage_reached);
-      } else {
-        converter->control = 2;
+    }
+    if(supply_sensor->v_motor > 29.0) {
+      converter_set_state(converter, charging);
+      triggered = 1.0;
+    }
+  } else {
+    if(converter_triggered(triggered) < 0.2) {
+      // Converter is on and had enough time to develop a current pattern
+      if(abs(supply_sensor->i_battery) < 2.0) {
+        converter_set_state(converter, off);
+        // Take note of the voltage we reached and adjust accordingly
+        // In case there is no current flow through the coil, assume a power failure
+        // and choose a safe starting point for power return instead of adjusting
+        if(supply_sensor->i_battery_variance > 2.0) {
+          converter->last_voltage_reached = supply_sensor->v_motor;
+          converter->last_i = supply_sensor->i_battery;
+          converter->last_i2 = supply_sensor->i_battery_variance;
+          converter->control += pid_v_motor(27.0 - converter->last_voltage_reached);
+        } else {
+          converter->control = 2;
+        }
+        // Next call is probably redundant, will happen once we switch the converter on
+        converter_apply(converter);
       }
-      converter_apply(converter);
     }
   }    
   #endif
