@@ -94,18 +94,74 @@ struct converter {
   pin_size_t enable_pin;
   int slice_num;
   bool enabled;
+  float control;
+  int level;
+  float last_voltage_reached;
+  float last_i;
+  float last_i2;
 };
 typedef struct converter converter_t;
 
-void converter_enable(converter_t *c, boolean enabled) {
-  c->enabled = enabled;
-  gpio_put(c->enable_pin, c->enabled);
+converter_t* converter_create() {
+  converter_t* converter = (converter_t*) malloc(sizeof(converter_t));
+  converter->pwm_pin = D0; // PWM 0A
+  converter->slice_num = pwm_gpio_to_slice_num(converter->pwm_pin);
+  converter->enable_pin = D1;
+  return converter;
 }
 
+/**
+ * We use an inverted output so that our PWM signal starts with a low phase.
+ * Hence to get to duty ratio > 0.5 we need to puth the level below 0.5*range.
+ * We want the control signal to be the inverse duty ratio.
+ */
+void converter_apply(converter_t *converter) {
+  if(converter->control > 4.0) converter->control = 4.0;
+  if(converter->control < 1.25) converter->control = 1.25;
+  converter->level = 4096*(1.0 - 1.0/converter->control);
+  pwm_set_chan_level(converter->slice_num, PWM_CHAN_A, converter->level);
+}
 
+void converter_enable(converter_t *c, boolean enabled) {
+  c->enabled = enabled;
+  pwm_set_chan_level(c->slice_num, PWM_CHAN_B, enabled? 0: 4096);
+}
 
-int raw_i;
-int raw_v;
+void converter_init(converter_t* converter) {
+  // It is crucial that we set up the PWM to a sane pulse width
+  // (too much connection to ground will short our power source)
+  // before enabling the half bridge
+
+  // We use PICO SDK functions for now
+  gpio_init(converter->enable_pin);
+  gpio_set_dir(converter->enable_pin, GPIO_OUT);
+  // Make sure the half bridge is not enabled
+  gpio_put(converter->enable_pin, false);
+  
+  gpio_set_function(converter->pwm_pin, GPIO_FUNC_PWM);
+  gpio_set_function(converter->enable_pin, GPIO_FUNC_PWM);
+  // Hold back while configuring
+  pwm_set_enabled(converter->slice_num, false);
+  // We want the output high by default on the PWM pin (which is the safe way)
+  // and low by default on the enable pin
+  // so that as long as the counters don't run, we don't short our power supply
+  pwm_set_output_polarity(converter->slice_num, true, true);
+  
+  pwm_set_clkdiv_mode(converter->slice_num, PWM_DIV_FREE_RUNNING);
+  // This will result in roughly 20kHz frequency
+  pwm_set_wrap(converter->slice_num, 4095);
+  pwm_set_clkdiv_int_frac4(converter->slice_num, 2, 0);
+  pwm_set_phase_correct(converter->slice_num, false);
+
+  // Start out with 50% duty cycle so that we get a voltage that is about twice the battery voltage.
+  // But do not enable the converter yet.
+  converter->control = 2.0;
+  converter_apply(converter);
+  converter_enable(converter, false);
+
+  // Kick off the PWM slice. The SimpleFOC PWM driver will later (re) enable all slices.
+  pwm_set_enabled(converter->slice_num, true);
+}
 
 adc_engine_t* adc_engine;
 converter_t* converter;
@@ -169,38 +225,12 @@ void setup() {
   // Set up power converter
   // On Adafruit Metro, be sure to put the RX/TX switch to RX=0, TX=1
 
-  converter = (converter_t*) malloc(sizeof(converter_t));
-  converter->pwm_pin = D0; // PWM 0A
-  converter->slice_num = pwm_gpio_to_slice_num(converter->pwm_pin);
-  converter->enable_pin = D1;
+  converter = converter_create();
 
-  // It is crucial that we set up the PWM to a sane pulse width
-  // (too much connection to ground will short our power source)
-  // before enabling the half bridge
+  converter_init(converter);
 
-  // We use PICO SDK functions for now
-  gpio_init(converter->enable_pin);
-  gpio_set_dir(converter->enable_pin, GPIO_OUT);
-  // Make sure the half bridge is not enabled
-  gpio_put(converter->enable_pin, false);
-  
-  gpio_set_function(converter->pwm_pin, GPIO_FUNC_PWM);
-  // Hold back while configuring
-  pwm_set_enabled(converter->slice_num, false);
-  // We want the output high by default (which is the safe way)
-  // so that as long as the counters don't run, we don't short our power supply
-  pwm_set_output_polarity(converter->slice_num, false, false);
-  
-  pwm_set_clkdiv_mode(converter->slice_num, PWM_DIV_FREE_RUNNING);
-  // This will result in roughly 20kHz frequency
-  pwm_set_wrap(converter->slice_num, 4095);
-  pwm_set_clkdiv_int_frac4(converter->slice_num, 2, 0);
-  pwm_set_phase_correct(converter->slice_num, false);
-
-  // Start out with 50% duty cycle so that we get a voltage that is about twice the battery voltage
-  pwm_set_chan_level(converter->slice_num, PWM_CHAN_A, 2048);
-  // The SimpleFOC PWM driver will later (re) enable all slices.
-  pwm_set_enabled(converter->slice_num, true);
+  // Start out with the converter going full throttle
+  // TODO: Change
   converter_enable(converter, true);
 
   // Setup ADC engine
@@ -329,7 +359,8 @@ void my_monitor() {
   Serial.printf("%7.2f %7.2f %7.2f ", motor->target, motor->shaft_velocity, motor->shaft_angle);
   Serial.printf("%7.2f %7.2f ", motor->voltage.d, motor->voltage.q);
   Serial.printf("%7.0f %7.0f ", motor->current.q * 1000, motor->current.d * 1000);
-  Serial.printf("%9.4f %9.4f %7.2f", supply_sensor->i_battery, supply_sensor->i_battery_variance, supply_sensor->v_motor);
+  Serial.printf("%9.4f %9.4f %7.2f ", supply_sensor->i_battery, supply_sensor->i_battery_variance, supply_sensor->v_motor);
+  Serial.printf("%9.4f %9.4f %7.2f %d ", converter->last_i, converter->last_i2, converter->last_voltage_reached, converter->level);
   Serial.println();
 }
 
@@ -338,16 +369,22 @@ void my_monitor() {
  * voltage stays on target.
  *
  * What should the parameters be?
- * Our error signal is measured voltage minus target voltage of 27 Volts.
- * When our voltage is too high, we need to increase the control value. So our P needs to be positive.
- * We want to be able to drop or raise the voltage in 100 msecs. So our rate limit needs to be about 15000.
- * In theory, motor voltage is battery voltage over duty cycle. So the inverse duty cycle would be a
- * good control variable. Our limits would be 1.2 and about 2.8 with a center around 2 (for a 3S battery at 15V).
- * So lets take a limit of 0.8 to either side. We want to be able to swing in about 100 msecs.
- * So the ramp would be about 10. By design of the control variable, our P should be 1.0.
- * Not sure about the I and D parts. Let's just try.
+ * Our error signal is the target voltage of 27 Volts minus the measured voltage.
+ * What should we use as control value? Let U2 be the higher voltage.
+ * Then U1 = duty_ration * U2. U1 is mostly constant but unknown in detail.
+ * The PID will have an easier job if the control signal is in a mostly linear relationship with the
+ * error. As U2 = 1/duty_ratio * U1, we pick 1/duty_ratio as control value.
+ * And we take into account that a PID controller wants to control something that is related
+ * to the rate of change of the error, not directly to the error.
+ * So we let the PID controller change the rate of change of 1/duty_ratio.
+ * When our voltage U2 is too low (error positive),
+ * we need to decrease the duty ratio hence increase the control value. So our P needs to be positive.
+ * Assuming a U1 of 14V, a 1V increase in U2 roughly corresponds to going from 2 to 2.05.
+ * We probably want to make smaller adjustment steps than that, so a plausible pick for P would be 0.02.
+ * Our limit for the step size would be of the same order of magnitude.
+ * We don't care much about the range of change of the rate of change of the control variable.
  */ 
-PIDController pid_v_motor = PIDController(1.0, 0.0, 0.0, 10.0, 0.8);
+PIDController pid_v_motor = PIDController(0.02, 0.0, 0.0, 1.0, 0.05);
 
 /**
  * PID controller for the target torque (we want to avoid abrupt changes)
@@ -363,85 +400,72 @@ void command_resistance_level(char *cmd) {
 LowPassFilter converter_triggered(1.0/5000);
 
 void loop() {
-  // For now, just try to check the sensors are working ok.
+
+  gpio_put(SIGNAL_PIN, true);
+  supply_sensor_update(supply_sensor);
+
+  #if false
+  // Catch some power issues
+  if(supply_sensor->v_motor > 30.0 || supply_sensor->v_motor < 10.0 && supply_sensor->i_battery > 1) {
+    // Our regulation seems to fail, shut down motor
+    motor->disable();
+    Serial.println("Over or under voltage, motor disabled, shutdown");
+    initOk = false;
+  }
+  if(false & abs(supply_sensor->i_battery) > 12.0) {
+    motor->disable();
+    converter_enable(converter, false);
+    Serial.println("Over current, motor and converter disabled");
+    initOk = false;
+  }
+  #endif
+
+  #if true
+  // Simple hysterisis loop to prevent idling of the converter. After we decide to
+  // switch on ("trigger") the converter, we want to give the current some time to
+  // develop to prevent immediate shutdown. So we use a low pass filtered activation
+  // signal that decays over about 4 PWM cycles.
+  //
+  // TODO: How would we detect that our duty cycle needs adjustment? Wouldn't it have
+  // to depend on the input (battery) voltage?
+  float triggered = 0.0;
+  if(!converter->enabled && (supply_sensor->v_motor < 26.0 || supply_sensor->v_motor > 29.0)) {
+    // TODO: Improvement: Don't switch the converter on immediately.
+    // Instead, schedule the enablement to happen when the converter enters the right phase.
+    // When we want to bring the voltage up,
+    // that would be when the inductor gets connected to the low side the next time.
+    // When we want to bring the voltage down, 
+    // that would be when the inductor gets connected to the high side the next time.
+    // We also don't want to mess with the phase of the converter, so best would be to
+    // schedule an interrupt for the interesting transition of the converter pin.
+      converter_enable(converter, true);
+      triggered = 1.0;
+  }
+  if(converter->enabled && converter_triggered(triggered) < 0.2) {
+    // Converter is on and had enough time to develop a current pattern
+    if(abs(supply_sensor->i_battery) < 2.0) {
+      converter_enable(converter, false);
+      // Take note of the voltage we reached and adjust accordingly
+      // In case there is no current flow through the coil, assume a power failure
+      // and choose a safe starting point for power return instead of adjusting
+      if(supply_sensor->i_battery_variance > 2.0) {
+        converter->last_voltage_reached = supply_sensor->v_motor;
+        converter->last_i = supply_sensor->i_battery;
+        converter->last_i2 = supply_sensor->i_battery_variance;
+        converter->control += pid_v_motor(27.0 - converter->last_voltage_reached);
+      } else {
+        converter->control = 2;
+      }
+      converter_apply(converter);
+    }
+  }    
+  #endif
+
+  gpio_put(SIGNAL_PIN, false);
+
   if(initOk) {
-    gpio_put(SIGNAL_PIN, true);
 
     motor->loopFOC();
-    supply_sensor_update(supply_sensor);
-
-    // Catch some power issues
-    if(false && supply_sensor->v_motor > 30.0 || supply_sensor->v_motor < 10.0 && supply_sensor->i_battery > 1) {
-      // Our regulation seems to fail, shut down motor
-      motor->disable();
-      Serial.println("Over or under voltage, motor disabled, shutdown");
-      initOk = false;
-    }
-    if(false & abs(supply_sensor->i_battery) > 12.0) {
-      motor->disable();
-      converter_enable(converter, false);
-      Serial.println("Over current, motor and converter disabled");
-      initOk = false;
-    }
-
-    #if false
-    float inv_converter_duty = 2 + pid_v_motor(27.0 - supply_sensor->v_motor);
-    int converter_level = 4096/inv_converter_duty;
-    // Limit again for safety -- the critical part is the low end so that we
-    // don't start putting too much current through the coil.
-    if(converter_level < 500) converter_level = 500;
-    if(converter_level > 4000) converter_level = 4000;
-    pwm_set_chan_level(converter->slice_num, PWM_CHAN_A, converter_level);
-
-    // Avoid idling the converter, i.e. having it shuffle current back and forth without significant
-    // energy transfer (this leads to energy loss due to the resistance losses).
-    bool low_efficiency = converter->enabled && supply_sensor->i_battery_variance > supply_sensor->i_battery * supply_sensor->i_battery;
-    if(supply_sensor->v_motor < 18 || supply_sensor->v_motor > 29) {
-      converter_enable(converter, true);
-    } else {
-      converter_enable(converter, !low_efficiency);
-    };
-    #endif
-
-    #if false
-    // Simple hysterisis loop to keep supply voltage within a band.
-    // Band needs to be wide enough to suprress cycling.
-    if(converter->enabled && supply_sensor->v_motor > 26.0) {
-      converter_enable(converter, false);
-    }
-    if(!converter->enabled && supply_sensor->v_motor < 23.0) {
-      converter_enable(converter, true);
-    }
-    #endif
-
-    #if true
-    // Simple hysterisis loop to prevent idling of the converter. After we decide to
-    // switch on ("trigger") the converter, we want to give the current some time to
-    // develop to prevent immediate shutdown. So we use a low pass filtered activation
-    // signal that decays over about 4 PWM cycles.
-    //
-    // TODO: How would we detect that our duty cycle needs adjustment? Wouldn't it have
-    // to depend on the input (battery) voltage?
-    float triggered = 0.0;
-    if(!converter->enabled && (supply_sensor->v_motor < 26.0 || supply_sensor->v_motor > 28.0)) {
-      // TODO: Improvement: Don't switch the converter on immediately.
-      // Instead, schedule the enablement to happen when the converter enters the right phase.
-      // When we want to bring the voltage up,
-      // that would be when the inductor gets connected to the low side the next time.
-      // When we want to bring the voltage down, 
-      // that would be when the inductor gets connected to the high side the next time.
-      // We also don't want to mess with the phase of the converter, so best would be to
-      // schedule an interrupt for the interesting transition of the converter pin.
-       converter_enable(converter, true);
-       triggered = 1.0;
-    }
-    if(converter->enabled && converter_triggered(triggered) < 0.2) {
-      // Converter is on and had enough time to develop a current pattern
-      if(abs(supply_sensor->i_battery) < 2.0) {
-        converter_enable(converter, false);
-      }
-    }    
-    #endif
 
     if(resistance_level > 0) {
       switch(motor->controller) {
@@ -466,14 +490,11 @@ void loop() {
       }
     }
    
-    gpio_put(SIGNAL_PIN, false);
-
     motor->move();
 
-    my_monitor();
-
-    commander->run();
-    n++;
-    n_value = n*1.0;
   }
+  my_monitor();
+  commander->run();
+  n++;
+  n_value = n*1.0;
 }
