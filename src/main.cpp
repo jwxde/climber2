@@ -4,6 +4,7 @@
 
 #include "adc_engine.h"
 #include "supply_sensor.h"
+#include "converter.h"
 
 // For convverter
 
@@ -89,131 +90,6 @@ int initFOC() {
 
 int initOk = 0;
 
-enum converter_state { off, consuming, charging};
-struct converter {
-  pin_size_t pwm_pin;
-  pin_size_t enable_pin;
-  int slice_num;
-  converter_state state;
-  float control;
-  int level;
-  float last_voltage_reached;
-  float last_i;
-  float last_i2;
-};
-typedef struct converter converter_t;
-
-converter_t* converter_create() {
-  converter_t* converter = (converter_t*) malloc(sizeof(converter_t));
-  converter->pwm_pin = D0; // PWM 0A
-  converter->slice_num = pwm_gpio_to_slice_num(converter->pwm_pin);
-  converter->enable_pin = D1;
-  return converter;
-}
-
-/**
- * We want the control signal to be the inverse duty ratio.
- * When consuming, we use an inverted PWM output so that our PWM signal starts with a low phase.
- * Hence to get to duty ratio > 0.5 we need to put the level below 0.5*range.
- * When charging, we use a non inverted PWM output so that our PWM signal starts with a high phase.
- * Hence to get a duty ration > 0.5 wee need to put the level above 0.5*range.
- */
-void converter_apply(converter_t *converter) {
-  if(converter->control > 4.0) converter->control = 4.0;
-  if(converter->control < 1.25) converter->control = 1.25;
-  switch(converter->state) {
-    case converter_state::consuming:
-      converter->level = 0x1000*(1.0 - 1.0/converter->control); break;
-    case converter_state::charging:
-    case converter_state::off:
-      converter->level = 0x1000*(1.0/converter->control);
-  }
-  pwm_set_chan_level(converter->slice_num, PWM_CHAN_A, converter->level);
-}
-
-void converter_set_state(converter_t *c, converter_state state) {
-  // We only support state transitions from off into one of the non off phases.
-  // Why? We want to change the polarity of the PWM signal between consuming
-  // and charging states. But the polarity becomes effective immediately
-  // which we don't want unless we are coming from an off state.
-  switch(c->state) {
-    case off:
-      switch(state) {
-        case consuming:
-          pwm_set_output_polarity(c->slice_num, true, false);
-          c->state = consuming;
-          break;
-        case charging:
-          pwm_set_output_polarity(c->slice_num, false, false);
-          c->state = charging;
-          break;
-        case off:
-          // nothing to do
-          break;
-      }
-      break;
-    default:
-      switch(state) {
-        case off:
-          c->state = off;
-          break;
-        default:
-          // Can't change anything now
-          break;
-      }
-  }
-  converter_apply(c);
-  pwm_set_chan_level(c->slice_num, PWM_CHAN_B, c->state == converter_state::off ? 0 : 4096);
-}
-
-void converter_disable(converter_t* converter) {
-  gpio_set_outover(converter->pwm_pin, GPIO_OVERRIDE_HIGH);
-  gpio_set_outover(converter->enable_pin, GPIO_OVERRIDE_LOW);
-}
-
-void converter_enable(converter_t* converter) {
-  gpio_set_outover(converter->pwm_pin, GPIO_OVERRIDE_NORMAL);
-  gpio_set_outover(converter->enable_pin, GPIO_OVERRIDE_NORMAL);
-}
-
-void converter_init(converter_t* converter) {
-  // It is crucial that we set up the PWM to a sane pulse width
-  // (too much connection to ground will short our power source)
-  // before enabling the half bridge by connecting the output pins
-  
-  // In order to eliminate all risk, we configure pull ups/downs
-  // the way we want the default signal to be (half bridge not enabled, hi side connected)
-  // and disable output. We need to set the enablement state after setting the pin function as
-  // the pin function also sets the enablement state.
-  gpio_pull_up(converter->pwm_pin);
-  gpio_pull_down(converter->enable_pin);
-  gpio_set_function(converter->pwm_pin, GPIO_FUNC_PWM);
-  gpio_set_function(converter->enable_pin, GPIO_FUNC_PWM);
-  converter_disable(converter);
- 
-  // Don't invert the enable pin signal so that we get an off signal
-  // by default (for level 0).
-  pwm_set_output_polarity(converter->slice_num, false, false);
-  
-  pwm_set_clkdiv_mode(converter->slice_num, PWM_DIV_FREE_RUNNING);
-  // This will result in roughly 20kHz frequency
-  pwm_set_wrap(converter->slice_num, 4095);
-  pwm_set_clkdiv_int_frac4(converter->slice_num, 2, 0);
-  pwm_set_phase_correct(converter->slice_num, false);
-
-  // Start out with 50% duty cycle so that we get a voltage that is about twice the battery voltage.
-  // But do not enable the converter yet.
-  converter->control = 2.0;
-  converter_apply(converter);
-  converter_set_state(converter, off);
-
-  // Kick off the PWM slice. The SimpleFOC PWM driver will later (re) enable all slices.
-  pwm_set_enabled(converter->slice_num, true);
-
-  // And let the signal show up on the output pins
-  converter_enable(converter);
-}
-
 adc_engine_t* adc_engine;
 converter_t* converter;
 supply_sensor_t* supply_sensor;
@@ -241,11 +117,13 @@ float angle_0 = 0;
 // And we collect the data that resulted from the previous run.
 
 void kickOffAdcConversion() {
-  // TODO: Check that the previous run finished as expected.
   if(pwm_get_irq_status_mask() && (0x1 << converter->slice_num)) {
     pwm_clear_irq(converter->slice_num);
-    adc_engine_run(adc_engine);
-    adc_engine_collect(adc_engine);
+    // A run will only be triggered in case the previous run has finished as expected
+    if(adc_engine_run(adc_engine)) {
+      adc_engine_collect(adc_engine);
+      
+    }
   }
 }
 
@@ -276,8 +154,7 @@ void setup() {
   // Set up power converter
   // On Adafruit Metro, be sure to put the RX/TX switch to RX=0, TX=1
 
-  converter = converter_create();
-
+  converter = converter_create(D0, D1);
   converter_init(converter);
 
   // Start out with the converter going full throttle
@@ -506,8 +383,7 @@ void loop() {
         } else {
           converter->control = 2;
         }
-        // Next call is probably redundant, will happen once we switch the converter on
-        converter_apply(converter);
+        // Note: changes will be applied next time the converter is switched on.
       }
     }
   }    

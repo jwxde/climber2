@@ -84,7 +84,7 @@ int adc_engine_init(adc_engine_t* e) {
     return 0;
 }
 
-void adc_engine_run(adc_engine_t* e) {
+bool adc_engine_run(adc_engine_t* e) {
 
     // Did previous runs finish?
     uint32_t control_counts = dma_channel_hw_addr(e->dma_control_channel)->transfer_count;
@@ -99,7 +99,7 @@ void adc_engine_run(adc_engine_t* e) {
         if(control_counts + 1 != transfer_counts) e->sync_losses++;
         // Do not attempt to restart, this will only result in more mess.
         // Instead let the current transfer run out.
-        return;
+        return false;
     } 
 
     // Make sure that data will be transferred to the next buffer
@@ -127,6 +127,8 @@ void adc_engine_run(adc_engine_t* e) {
     );
     // Kick off the ADC by writing the first command
     adc_hw->cs = e->adc_commands[0];
+
+    return true;
 }
 
 void adc_engine_collect(adc_engine_t* e) {

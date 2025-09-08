@@ -30,6 +30,6 @@ typedef struct adc_engine adc_engine_t;
 
 adc_engine_t* adc_engine_create();
 int adc_engine_init(adc_engine_t* engine);
-void adc_engine_run(adc_engine_t* engine);
+bool adc_engine_run(adc_engine_t* engine);
 // TODO: Should this really be here?
 void adc_engine_collect(adc_engine_t* engine);
