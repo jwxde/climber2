@@ -2,6 +2,7 @@
 #include <cstdlib>
 #include <hardware/gpio.h>
 #include <hardware/pwm.h>
+#include <hardware/timer.h>
 
 converter_t* converter_create(int pwm_pin, int enable_pin) {
   converter_t* converter = (converter_t*) malloc(sizeof(converter_t));
@@ -45,6 +46,7 @@ void converter_set_state(converter_t *c, converter_state state) {
         case consuming:
           pwm_set_output_polarity(c->slice_num, true, false);
           c->state = consuming;
+          c->last_activated = time_us_32();
           break;
         case charging:
           pwm_set_output_polarity(c->slice_num, false, false);
@@ -109,6 +111,7 @@ void converter_init(converter_t* converter) {
   converter->control = 2.0;
   converter_apply(converter);
   converter_set_state(converter, off);
+  converter->last_activated = 0;
 
   // Kick off the PWM slice. The SimpleFOC PWM driver will later (re) enable all slices.
   pwm_set_enabled(converter->slice_num, true);

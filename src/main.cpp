@@ -5,6 +5,7 @@
 #include "adc_engine.h"
 #include "supply_sensor.h"
 #include "converter.h"
+#include "converter_control.h"
 
 // For convverter
 
@@ -93,6 +94,7 @@ int initOk = 0;
 adc_engine_t* adc_engine;
 converter_t* converter;
 supply_sensor_t* supply_sensor;
+converter_control_t* converter_control;
 
 void converterInfo(char *cmd) {
   if (strlen(cmd) > 0) {
@@ -156,6 +158,7 @@ void setup() {
 
   converter = converter_create(D0, D1);
   converter_init(converter);
+  converter_control = converter_control_create();
 
   // Start out with the converter going full throttle
   // TODO: Change
@@ -289,7 +292,7 @@ void my_monitor() {
   Serial.printf("%7.2f %7.2f ", motor->voltage.d, motor->voltage.q);
   Serial.printf("%7.0f %7.0f ", motor->current.q * 1000, motor->current.d * 1000);
   Serial.printf("%9.4f %9.4f %7.2f ", supply_sensor->i_battery, supply_sensor->i_battery_variance, supply_sensor->v_motor);
-  Serial.printf("%9.4f %9.4f %7.2f %d ", converter->last_i, converter->last_i2, converter->last_voltage_reached, converter->level);
+  Serial.printf("%9.4f %9.4f %7.2f %d ", converter_control->last_i, converter_control->last_i2, converter_control->last_voltage_reached, converter->level);
   Serial.println();
 }
 
@@ -326,8 +329,6 @@ void command_resistance_level(char *cmd) {
   commander->scalar(&resistance_level, cmd);
 }
 
-LowPassFilter converter_triggered(1.0/5000);
-
 void loop() {
 
   gpio_put(SIGNAL_PIN, true);
@@ -357,29 +358,27 @@ void loop() {
   //
   // TODO: How would we detect that our duty cycle needs adjustment? Wouldn't it have
   // to depend on the input (battery) voltage?
-  float triggered = 0.0;
   if(converter->state == off) {
     if (supply_sensor->v_motor < 26.0) {
       converter_set_state(converter, consuming);
-      triggered = 1.0;
     }
     if(supply_sensor->v_motor > 29.0) {
       converter_set_state(converter, charging);
-      triggered = 1.0;
     }
   } else {
-    if(converter_triggered(triggered) < 0.2) {
+    if(time_us_32() - converter->last_activated > 100) {
       // Converter is on and had enough time to develop a current pattern
       if(abs(supply_sensor->i_battery) < 2.0) {
         converter_set_state(converter, off);
-        // Take note of the voltage we reached and adjust accordingly
+        // Take note of the voltage we reached as a basis for future adjustments
+        converter_control->last_voltage_reached = supply_sensor->v_motor;
+        converter_control->last_i = supply_sensor->i_battery;
+        converter_control->last_i2 = supply_sensor->i_battery_variance;
+
         // In case there is no current flow through the coil, assume a power failure
         // and choose a safe starting point for power return instead of adjusting
-        if(supply_sensor->i_battery_variance > 2.0) {
-          converter->last_voltage_reached = supply_sensor->v_motor;
-          converter->last_i = supply_sensor->i_battery;
-          converter->last_i2 = supply_sensor->i_battery_variance;
-          converter->control += pid_v_motor(27.0 - converter->last_voltage_reached);
+        if(converter_control->last_i2 > 2.0) {
+          converter->control += pid_v_motor(27.0 - converter_control->last_voltage_reached);
         } else {
           converter->control = 2;
         }

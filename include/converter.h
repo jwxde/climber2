@@ -1,3 +1,4 @@
+#include <stdint.h>
 enum converter_state { off, consuming, charging};
 
 struct converter {
@@ -7,9 +8,7 @@ struct converter {
   converter_state state;
   float control;
   int level;
-  float last_voltage_reached;
-  float last_i;
-  float last_i2;
+  uint32_t last_activated;
 };
 typedef struct converter converter_t;
 
