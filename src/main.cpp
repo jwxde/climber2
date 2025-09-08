@@ -140,11 +140,11 @@ void converter_set_state(converter_t *c, converter_state state) {
     case off:
       switch(state) {
         case consuming:
-          pwm_set_output_polarity(c->slice_num, true, true);
+          pwm_set_output_polarity(c->slice_num, true, false);
           c->state = consuming;
           break;
         case charging:
-          pwm_set_output_polarity(c->slice_num, false, true);
+          pwm_set_output_polarity(c->slice_num, false, false);
           c->state = charging;
           break;
         case off:
@@ -163,28 +163,37 @@ void converter_set_state(converter_t *c, converter_state state) {
       }
   }
   converter_apply(c);
-  pwm_set_chan_level(c->slice_num, PWM_CHAN_B, c->state == converter_state::off ? 4096 : 0);
+  pwm_set_chan_level(c->slice_num, PWM_CHAN_B, c->state == converter_state::off ? 0 : 4096);
+}
+
+void converter_disable(converter_t* converter) {
+  gpio_set_outover(converter->pwm_pin, GPIO_OVERRIDE_HIGH);
+  gpio_set_outover(converter->enable_pin, GPIO_OVERRIDE_LOW);
+}
+
+void converter_enable(converter_t* converter) {
+  gpio_set_outover(converter->pwm_pin, GPIO_OVERRIDE_NORMAL);
+  gpio_set_outover(converter->enable_pin, GPIO_OVERRIDE_NORMAL);
 }
 
 void converter_init(converter_t* converter) {
   // It is crucial that we set up the PWM to a sane pulse width
   // (too much connection to ground will short our power source)
-  // before enabling the half bridge
-
-  // We use PICO SDK functions for now
-  gpio_init(converter->enable_pin);
-  gpio_set_dir(converter->enable_pin, GPIO_OUT);
-  // Make sure the half bridge is not enabled
-  gpio_put(converter->enable_pin, false);
+  // before enabling the half bridge by connecting the output pins
   
+  // In order to eliminate all risk, we configure pull ups/downs
+  // the way we want the default signal to be (half bridge not enabled, hi side connected)
+  // and disable output. We need to set the enablement state after setting the pin function as
+  // the pin function also sets the enablement state.
+  gpio_pull_up(converter->pwm_pin);
+  gpio_pull_down(converter->enable_pin);
   gpio_set_function(converter->pwm_pin, GPIO_FUNC_PWM);
   gpio_set_function(converter->enable_pin, GPIO_FUNC_PWM);
-  // Hold back while configuring
-  pwm_set_enabled(converter->slice_num, false);
-  // We want the output high by default on the PWM pin (which is the safe way)
-  // and low by default on the enable pin
-  // so that as long as the counters don't run, we don't short our power supply
-  pwm_set_output_polarity(converter->slice_num, true, true);
+  converter_disable(converter);
+ 
+  // Don't invert the enable pin signal so that we get an off signal
+  // by default (for level 0).
+  pwm_set_output_polarity(converter->slice_num, false, false);
   
   pwm_set_clkdiv_mode(converter->slice_num, PWM_DIV_FREE_RUNNING);
   // This will result in roughly 20kHz frequency
@@ -200,6 +209,9 @@ void converter_init(converter_t* converter) {
 
   // Kick off the PWM slice. The SimpleFOC PWM driver will later (re) enable all slices.
   pwm_set_enabled(converter->slice_num, true);
+
+  // And let the signal show up on the output pins
+  converter_enable(converter);
 }
 
 adc_engine_t* adc_engine;
