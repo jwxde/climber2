@@ -26,7 +26,7 @@ supply_sensor_t* supply_sensor_create(int* i, long* i2, int* v) {
 }
 
 void supply_sensor_update(supply_sensor_t* s) {
-  s->i_battery = s->i_battery_f((*s->raw_i * 3.3f/4096.0f - s->i_battery_offset) * s->i_battery_scale);
+  s->i_battery = (*s->raw_i * 3.3f/4096.0f - s->i_battery_offset) * s->i_battery_scale;
   s->i_battery_variance = s->i_battery_variance_f((*s->raw_i2 - 2*s->i_battery_offset_int*(*s->raw_i) + s->i_battery_offset2_int)*3.3f*3.3f/0x1000000 * s->i_battery_scale * s->i_battery_scale);
   s->v_motor = s->v_motor_f(*s->raw_v * 3.3f/0x1000) * s->v_motor_scale;
 }

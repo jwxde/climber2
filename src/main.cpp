@@ -292,7 +292,7 @@ void my_monitor() {
   Serial.printf("%7.2f %7.2f ", motor->voltage.d, motor->voltage.q);
   Serial.printf("%7.0f %7.0f ", motor->current.q * 1000, motor->current.d * 1000);
   Serial.printf("%9.4f %9.4f %7.2f ", supply_sensor->i_battery, supply_sensor->i_battery_variance, supply_sensor->v_motor);
-  Serial.printf("%9.4f %9.4f %7.2f %d ", converter_control->last_i, converter_control->last_i2, converter_control->last_voltage_reached, converter->level);
+  Serial.printf("%9.4f %9.4f %7.2f %7.2f %d ", converter_control->last_i, converter_control->last_i2, converter_control->last_voltage_reached, converter_control->input_voltage_estimate, converter->level);
   Serial.println();
 }
 
@@ -366,27 +366,30 @@ void loop() {
       converter_set_state(converter, charging);
     }
   } else {
-    if(time_us_32() - converter->last_activated > 100) {
+    if(time_us_32() - converter->last_activated > 500) {
       // Converter is on and had enough time to develop a current pattern
-      if(abs(supply_sensor->i_battery) < 2.0) {
+      if(abs(supply_sensor->i_battery) < 1.5) {
         converter_set_state(converter, off);
         // Take note of the voltage we reached as a basis for future adjustments
         converter_control->last_voltage_reached = supply_sensor->v_motor;
         converter_control->last_i = supply_sensor->i_battery;
         converter_control->last_i2 = supply_sensor->i_battery_variance;
-
+        converter_control->input_voltage_estimate = converter_control->input_voltage_estimate_f(converter_control->last_voltage_reached/converter->control);
         // In case there is no current flow through the coil, assume a power failure
         // and choose a safe starting point for power return instead of adjusting
-        if(converter_control->last_i2 > 2.0) {
-          converter->control += pid_v_motor(27.0 - converter_control->last_voltage_reached);
+        if(converter_control->last_i2 > 2.0 && converter_control->input_voltage_estimate > 0) {
+          converter->control = 27.0/converter_control->input_voltage_estimate;
         } else {
           converter->control = 2;
         }
         // Note: changes will be applied next time the converter is switched on.
       }
     }
-  }    
+  }
+
+
   #endif
+
 
   gpio_put(SIGNAL_PIN, false);
 
