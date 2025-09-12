@@ -1,3 +1,5 @@
+#pragma once
+
 #include <SimpleFOC.h>
 #include <current_sense/hardware_specific/rp2040/rp2040_mcu.h>
 

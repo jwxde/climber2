@@ -124,9 +124,10 @@ void kickOffAdcConversion() {
     // A run will only be triggered in case the previous run has finished as expected
     if(adc_engine_run(adc_engine)) {
       adc_engine_collect(adc_engine);
-      
+      supply_sensor_update(supply_sensor);
     }
   }
+  converter_control_do(converter_control, converter, supply_sensor);
 }
 
 void setup() {
@@ -162,6 +163,7 @@ void setup() {
 
   // Start out with the converter going full throttle
   // TODO: Change
+  converter->control = 2.2;
   converter_set_state(converter, consuming);
 
   // Setup ADC engine
@@ -332,63 +334,6 @@ void command_resistance_level(char *cmd) {
 void loop() {
 
   gpio_put(SIGNAL_PIN, true);
-  supply_sensor_update(supply_sensor);
-
-  #if false
-  // Catch some power issues
-  if(supply_sensor->v_motor > 30.0 || supply_sensor->v_motor < 10.0 && supply_sensor->i_battery > 1) {
-    // Our regulation seems to fail, shut down motor
-    motor->disable();
-    Serial.println("Over or under voltage, motor disabled, shutdown");
-    initOk = false;
-  }
-  if(false & abs(supply_sensor->i_battery) > 12.0) {
-    motor->disable();
-    converter_set_state(converter, off);
-    Serial.println("Over current, motor and converter disabled");
-    initOk = false;
-  }
-  #endif
-
-  #if true
-  // Simple hysterisis loop to prevent idling of the converter. After we decide to
-  // switch on ("trigger") the converter, we want to give the current some time to
-  // develop to prevent immediate shutdown. So we use a low pass filtered activation
-  // signal that decays over about 4 PWM cycles.
-  //
-  // TODO: How would we detect that our duty cycle needs adjustment? Wouldn't it have
-  // to depend on the input (battery) voltage?
-  if(converter->state == off) {
-    if (supply_sensor->v_motor < 26.0) {
-      converter_set_state(converter, consuming);
-    }
-    if(supply_sensor->v_motor > 29.0) {
-      converter_set_state(converter, charging);
-    }
-  } else {
-    if(time_us_32() - converter->last_activated > 500) {
-      // Converter is on and had enough time to develop a current pattern
-      if(abs(supply_sensor->i_battery) < 1.5) {
-        converter_set_state(converter, off);
-        // Take note of the voltage we reached as a basis for future adjustments
-        converter_control->last_voltage_reached = supply_sensor->v_motor;
-        converter_control->last_i = supply_sensor->i_battery;
-        converter_control->last_i2 = supply_sensor->i_battery_variance;
-        converter_control->input_voltage_estimate = converter_control->input_voltage_estimate_f(converter_control->last_voltage_reached/converter->control);
-        // In case there is no current flow through the coil, assume a power failure
-        // and choose a safe starting point for power return instead of adjusting
-        if(converter_control->last_i2 > 2.0 && converter_control->input_voltage_estimate > 0) {
-          converter->control = 27.0/converter_control->input_voltage_estimate;
-        } else {
-          converter->control = 2;
-        }
-        // Note: changes will be applied next time the converter is switched on.
-      }
-    }
-  }
-
-
-  #endif
 
 
   gpio_put(SIGNAL_PIN, false);

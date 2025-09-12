@@ -16,7 +16,7 @@ supply_sensor_t* supply_sensor_create(int* i, long* i2, int* v) {
   s->i_battery_scale = 1/0.100 * 5.0/3.3;
   // we have a 22k vs 1k voltage divider, then we apply a measured correction factor
   s->v_motor_scale = 23.0;
-  s->v_motor_f = LowPassFilter(.0001);
+  s->v_motor_f = LowPassFilter(.01);
   // We want to average batty current over one or two PWM cycles.
   // We will get about 5 samples per PWM cycle (max).
   // One PWM cycle is 50 usecs. So 0.0001 corresponds to 2 PWM cycles.

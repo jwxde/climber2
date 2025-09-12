@@ -21,17 +21,13 @@ converter_t* converter_create(int pwm_pin, int enable_pin) {
  * Hence to get to duty ratio > 0.5 we need to put the level below 0.5*range.
  * When charging, we use a non inverted PWM output so that our PWM signal starts with a high phase.
  * Hence to get a duty ration > 0.5 wee need to put the level above 0.5*range.
+ * BUT: When charging we want to reverse the relation anyways, so we end up using the same
+ * formula in both cases.
  */
 void converter_apply(converter_t *converter) {
   if(converter->control > 4.0) converter->control = 4.0;
   if(converter->control < 1.25) converter->control = 1.25;
-  switch(converter->state) {
-    case converter_state::consuming:
-      converter->level = 0x1000*(1.0 - 1.0/converter->control); break;
-    case converter_state::charging:
-    case converter_state::off:
-      converter->level = 0x1000*(1.0/converter->control);
-  }
+  converter->level = 0x1000*(1.0 - 1.0/converter->control);
   pwm_set_chan_level(converter->slice_num, PWM_CHAN_A, converter->level);
 }
 
@@ -51,6 +47,7 @@ void converter_set_state(converter_t *c, converter_state state) {
         case charging:
           pwm_set_output_polarity(c->slice_num, false, false);
           c->state = charging;
+          c->last_activated = time_us_32();
           break;
         case off:
           // nothing to do

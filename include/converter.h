@@ -1,4 +1,6 @@
+#pragma once
 #include <stdint.h>
+
 enum converter_state { off, consuming, charging};
 
 struct converter {
