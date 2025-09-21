@@ -53,12 +53,11 @@ int initFOC() {
   // link the motor and the sensor
   motor->linkSensor(sensor);
 
-  // Don't link the driver before initialization, this might mess up zero setting  
+  currentSense->linkDriver(driver);
   if(!currentSense->init()) {
     Serial.println("Current sense init error\n");
     return 0;
   }
-  currentSense->linkDriver(driver);
   motor->linkCurrentSense(currentSense);
 
   // initialize the motor
@@ -290,9 +289,15 @@ void my_monitor() {
   if( !motor->monitor_downsample || monitor_cnt++ < (motor->monitor_downsample-1) ) return;
   monitor_cnt = 0;
 
+  if(!motor->enabled) {
+    // Make sure we have at least some current info
+    motor->current.q = motor->LPF_current_q(currentSense->getDCCurrent());
+    motor->current.d = 0;
+  }
+
   Serial.printf("%7.2f %7.2f %7.2f ", motor->target, motor->shaft_velocity, motor->shaft_angle);
   Serial.printf("%7.2f %7.2f ", motor->voltage.d, motor->voltage.q);
-  Serial.printf("%7.0f %7.0f ", motor->current.q * 1000, motor->current.d * 1000);
+  Serial.printf("%7.0f %7.0f %7.2f ", motor->current.q * 1000, motor->current.d * 1000, currentSense->getI2());
   Serial.printf("%9.4f %9.4f %7.2f ", supply_sensor->i_battery, supply_sensor->i_battery_variance, supply_sensor->v_motor);
   Serial.printf("%9.4f %9.4f %7.2f %7.2f %d ", converter_control->last_i, converter_control->last_i2, converter_control->last_voltage_reached, converter_control->input_voltage_estimate, converter->level);
   Serial.println();

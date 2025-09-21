@@ -6,6 +6,8 @@ public:
     // CurrentSense interface implementing functions 
     int init() override;
     PhaseCurrent_s getPhaseCurrents() override;
+    inline float getI2() { return i2; }
 private:
     int* raw_values;
+    float i2;
 };
