@@ -338,10 +338,7 @@ LowPassFilter lp_shaft_velocity = LowPassFilter(0.01);
 
 void loop() {
 
-  gpio_put(SIGNAL_PIN, true);
-
-
-  gpio_put(SIGNAL_PIN, false);
+  gpio_put(SIGNAL_PIN, ((int) (motor->electrical_angle / M_PI) % 2) == 0);
 
   if(initOk) {
 
