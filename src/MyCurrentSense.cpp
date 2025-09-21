@@ -1,4 +1,5 @@
 #include "MyCurrentSense.h"
+#include <SimpleFOC.h>
 
 MyCurrentSense::MyCurrentSense(int* input, float gain, float offset) {
     raw_values = input;
@@ -34,6 +35,11 @@ int MyCurrentSense::init() {
         offset_ia = offset_ia*3.3/4096/1000;
         offset_ib = offset_ib*3.3/4096/1000;
         offset_ic = offset_ic*3.3/4096/1000;
+        
+        SIMPLEFOC_DEBUG("CS: Offsets: ");
+        SIMPLEFOC_DEBUG("A: ", offset_ia);
+        SIMPLEFOC_DEBUG("B: ", offset_ib);
+        SIMPLEFOC_DEBUG("C: ", offset_ic);
         // Leave the driver off, it will be enabled later anyways
     }
 
