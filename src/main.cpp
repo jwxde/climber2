@@ -112,8 +112,6 @@ void command_current_scale(char *cmd) { commander->scalar(&supply_sensor->i_batt
 void command_velocity_pid(char *cmd) { commander->pid(&motor->PID_velocity, cmd); }
 void command_angle_pid(char *cmd) { commander->pid(&motor->P_angle, cmd); }
 
-float angle_0 = 0;
-
 // For each cycle of the converter PWM, we kick of a new ADC run.
 // And we collect the data that resulted from the previous run.
 
@@ -230,7 +228,7 @@ void setup() {
     motor->loopFOC();
     motor->move();
   }
-  angle_0 = motor->shaft_angle;
+  motor->sensor_offset = motor->shaft_angle;
   motor->disable();
 
   if(false) {
@@ -248,7 +246,7 @@ void setup() {
   // Second round of FOC to find battery current polarity
   // Create some power consumption by 
   motor->controller = MotionControlType::angle;
-  motor->target = angle_0;
+  motor->target = 0;
   for(int n = 0; n < 1000; n++) {
     motor->loopFOC();
     motor->move();
@@ -265,7 +263,7 @@ void setup() {
 
   switch(motor->controller) {
     case MotionControlType::angle:
-      motor->target = angle_0;
+      motor->target = 0;
       motor->P_angle.limit = 150;
       motor->velocity_limit = 150;
       // Torque limit
@@ -336,6 +334,8 @@ void command_resistance_level(char *cmd) {
   commander->scalar(&resistance_level, cmd);
 }
 
+LowPassFilter lp_shaft_velocity = LowPassFilter(0.01);
+
 void loop() {
 
   gpio_put(SIGNAL_PIN, true);
@@ -348,23 +348,23 @@ void loop() {
     motor->loopFOC();
 
     if(resistance_level > 0) {
+      float v = lp_shaft_velocity(motor->shaft_velocity);
       switch(motor->controller) {
-        case MotionControlType::torque:
-          if(motor->shaft_angle < angle_0) {
-            float torque_sp = -0.5;
-            if(supply_sensor->i_battery < -0.2) torque_sp = -0.5 * resistance_level;
-            motor->target = pid_torque_sp(torque_sp);
-          }
-          else {
+        case MotionControlType::velocity:
+          if(v > - 10.0) {
+            motor->controller = MotionControlType::angle;
+            motor->PID_velocity.limit = 0.6;
             motor->target = 0;
           }
           break;
         case MotionControlType::angle:
-          if(motor->shaft_angle < angle_0 - 0.1 && motor->shaft_velocity < -0.2) 
-            motor->PID_velocity.limit = max(0.6, 2 * resistance_level);
-          else {
-            motor->PID_velocity.limit = 0.6;
+          v = lp_shaft_velocity(motor->shaft_velocity);
+          if(motor->shaft_angle < - 0.1 && v < -10) {
+            motor->controller = MotionControlType::velocity;
+            motor->target = -10;
+            motor->PID_velocity.limit = resistance_level;
           }
+          break;
         default:
           break;
       }
