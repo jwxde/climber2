@@ -1,3 +1,5 @@
+#if TARGET_RP2350
+
 #include "adc_engine.h"
 #include <cstdlib>
 #include <hardware/adc.h>
@@ -11,8 +13,20 @@
 #define IB 4
 #define UM 5
 
+struct engine_data {
+    // DMA channels
+    int dma_transfer_channel;
+    dma_channel_config_t dma_transfer_config;
+    int dma_control_channel;
+    dma_channel_config_t dma_control_config;
+};
+typedef struct engine_data engine_data_t;
+
 adc_engine_t* adc_engine_create() {
     adc_engine_t* e = (adc_engine_t*) malloc(sizeof(adc_engine));
+    engine_data_t* ed = (engine_data_t*) malloc(sizeof(engine_data_t));
+
+    e->implementation_data = ed;
 
     e->sequence_length = 16;
     e->sequence = (int*) malloc(sizeof(int)*e->sequence_length);
@@ -27,6 +41,8 @@ adc_engine_t* adc_engine_create() {
 }
 
 int adc_engine_init(adc_engine_t* e) {
+
+    engine_data_t *ed = (engine_data_t*) e->implementation_data;
     // Set up pins to be used for ADC
     adc_gpio_init(PIN_BASE + PA);
     adc_gpio_init(PIN_BASE + PB);
@@ -46,16 +62,16 @@ int adc_engine_init(adc_engine_t* e) {
 
     // Set up a DMA channel to transfer samples to the buffer
 
-    e->dma_transfer_channel = dma_claim_unused_channel(true);
-    e->dma_transfer_config = dma_channel_get_default_config(e->dma_transfer_channel);
+    ed->dma_transfer_channel = dma_claim_unused_channel(true);
+    ed->dma_transfer_config = dma_channel_get_default_config(ed->dma_transfer_channel);
     // we transfer 16 bit at a time
-    channel_config_set_transfer_data_size(&e->dma_transfer_config, DMA_SIZE_16);
+    channel_config_set_transfer_data_size(&ed->dma_transfer_config, DMA_SIZE_16);
     // as we are reading from a FIFO, the source address never changes
-    channel_config_set_read_increment(&e->dma_transfer_config, false);
+    channel_config_set_read_increment(&ed->dma_transfer_config, false);
     // but the target address does
-    channel_config_set_write_increment(&e->dma_transfer_config, true);
+    channel_config_set_write_increment(&ed->dma_transfer_config, true);
     // and transfers are triggered by the ADC having written one sample to the FIFO
-    channel_config_set_dreq(&e->dma_transfer_config, DREQ_ADC);
+    channel_config_set_dreq(&ed->dma_transfer_config, DREQ_ADC);
 
     // Set up a second DMA channel to configure the ADC for sampling
     // The ADC is triggered to act by writing a suitable value to its CS register.
@@ -64,16 +80,16 @@ int adc_engine_init(adc_engine_t* e) {
         e->adc_commands[i] = (e->sequence[i] << ADC_CS_AINSEL_LSB) & ADC_CS_AINSEL_BITS | ADC_CS_START_ONCE_BITS | ADC_CS_ERR_STICKY_BITS | ADC_CS_EN_BITS;
     }
 
-    e->dma_control_channel = dma_claim_unused_channel(true);
-    e->dma_control_config = dma_channel_get_default_config(e->dma_control_channel);
+    ed->dma_control_channel = dma_claim_unused_channel(true);
+    ed->dma_control_config = dma_channel_get_default_config(ed->dma_control_channel);
     // The control register entries we transfer a 32 bit wide
-    channel_config_set_transfer_data_size(&e->dma_control_config, DMA_SIZE_32);
+    channel_config_set_transfer_data_size(&ed->dma_control_config, DMA_SIZE_32);
     // For each transfer, we get the next value
-    channel_config_set_read_increment(&e->dma_control_config, true);
+    channel_config_set_read_increment(&ed->dma_control_config, true);
     // All values get written to the same address
-    channel_config_set_write_increment(&e->dma_control_config, false);
+    channel_config_set_write_increment(&ed->dma_control_config, false);
     // We start a new conversion as soon as the previous one is finished
-    channel_config_set_dreq(&e->dma_control_config, DREQ_ADC);
+    channel_config_set_dreq(&ed->dma_control_config, DREQ_ADC);
 
     e->buf_write = NULL;
 
@@ -85,10 +101,12 @@ int adc_engine_init(adc_engine_t* e) {
 }
 
 bool adc_engine_run(adc_engine_t* e) {
+    engine_data_t *ed = (engine_data_t*) e->implementation_data;
+
 
     // Did previous runs finish?
-    uint32_t control_counts = dma_channel_hw_addr(e->dma_control_channel)->transfer_count;
-    uint32_t transfer_counts = dma_channel_hw_addr(e->dma_transfer_channel)->transfer_count;
+    uint32_t control_counts = dma_channel_hw_addr(ed->dma_control_channel)->transfer_count;
+    uint32_t transfer_counts = dma_channel_hw_addr(ed->dma_transfer_channel)->transfer_count;
     e->last_control_count = control_counts;
     e->last_transfer_count = transfer_counts;
 
@@ -111,15 +129,15 @@ bool adc_engine_run(adc_engine_t* e) {
         e->buf_write = e->buf;
         e->buf_read = e->buf;
     }
-    dma_channel_configure(e->dma_transfer_channel,
-        &e->dma_transfer_config, 
+    dma_channel_configure(ed->dma_transfer_channel,
+        &ed->dma_transfer_config, 
         e->buf_write,         // dest
         &adc_hw->fifo,  // source
         e->sequence_length,   // count
         true // start once the first DREQ is seen           
     );
-    dma_channel_configure(e->dma_control_channel,
-        &e->dma_control_config,
+    dma_channel_configure(ed->dma_control_channel,
+        &ed->dma_control_config,
         &adc_hw->cs,
         e->adc_commands + 1, // The first command will be written manually below to kick off everything
         e->sequence_length -1,
@@ -150,3 +168,5 @@ void adc_engine_collect(adc_engine_t* e) {
     e->i_bat2 = i2/n[IB];
     e->v_mot = v[UM]/n[UM];
 }
+
+#endif

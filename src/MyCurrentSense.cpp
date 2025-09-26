@@ -20,7 +20,7 @@ int MyCurrentSense::init() {
         // Be sure the driver is off so we don't see any currents
         driver->disable();
         // Wait a bit to let the system settle
-        busy_wait_ms(5);
+        delay(5);
         // We have a new measurements every PWM cycle so about every 50 micro seconds.
         // Let's average over 1000 measurements
         offset_ia = 0;
@@ -30,7 +30,7 @@ int MyCurrentSense::init() {
             offset_ia += raw_values[pinA];
             offset_ib += raw_values[pinB];
             offset_ic += raw_values[pinC];
-            busy_wait_us(50);
+            delay(50);
         }
         offset_ia = offset_ia*3.3/4096/1000;
         offset_ib = offset_ib*3.3/4096/1000;

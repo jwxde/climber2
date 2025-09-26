@@ -1,4 +1,4 @@
-#include <hardware/dma.h>
+#include <inttypes.h>
 
 struct adc_engine {
     int sequence_length;
@@ -7,11 +7,6 @@ struct adc_engine {
     uint16_t* buf;
     uint16_t* buf_read;
     uint16_t* buf_write;
-    // DMA channels
-    int dma_transfer_channel;
-    dma_channel_config_t dma_transfer_config;
-    int dma_control_channel;
-    dma_channel_config_t dma_control_config;
     // Engine health indicators
     uint32_t cycles;
     uint32_t cycle_overlaps;
@@ -24,6 +19,7 @@ struct adc_engine {
     int i_bat;
     long i_bat2;
     int v_mot;
+    void* implementation_data;
 };
 
 typedef struct adc_engine adc_engine_t;

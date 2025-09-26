@@ -7,10 +7,6 @@
 #include "converter.h"
 #include "converter_control.h"
 
-// For converter
-
-#include <hardware/pwm.h>
-
 #define SIGNAL_PIN D22
 
 // We construct these later so that we can debug output
@@ -114,13 +110,10 @@ void command_angle_pid(char *cmd) { commander->pid(&motor->P_angle, cmd); }
 // And we collect the data that resulted from the previous run.
 
 void kickOffAdcConversion() {
-  if(pwm_get_irq_status_mask() && (0x1 << converter->slice_num)) {
-    pwm_clear_irq(converter->slice_num);
-    // A run will only be triggered in case the previous run has finished as expected
-    if(adc_engine_run(adc_engine)) {
-      adc_engine_collect(adc_engine);
-      supply_sensor_update(supply_sensor);
-    }
+  // A run will only be triggered in case the previous run has finished as expected
+  if(adc_engine_run(adc_engine)) {
+    adc_engine_collect(adc_engine);
+    supply_sensor_update(supply_sensor);
   }
   converter_control_do(converter_control, converter, supply_sensor);
 }
@@ -128,7 +121,7 @@ void kickOffAdcConversion() {
 void setup() {
   // put your setup code here, to run once:
   Serial.begin(115200);
-  while (!Serial) { sleep_ms(100); }
+  while (!Serial) { delay(100); }
 
   Serial.printf("hi there\n");
 
@@ -137,17 +130,25 @@ void setup() {
   // Presumably because SPI unit 0 is attached to the ISP header.
   // See .platformio/packages/framework-arduinopico/variants/adafruit_metro_rp2350/pins_arduino.h
 
+  #if TARGET_RP2350
   SPI.setRX(D8); // MISO
   SPI.setCS(D9); // CS
   SPI.setSCK(D10); // SCK
   SPI.setTX(D11); // MOSI
+  #else
+  SPI.setMISO(D8); // MISO
+  SPI.setSSEL(D9); // CS
+  SPI.setSCLK(D10); // SCK
+  SPI.setMOSI(D11); // MOSI
+  #endif
+
   // Does SimpleFOC take care of handling CS?
   SPI.begin();
 
   // Set up cycle indicator signal
 
-  gpio_init(SIGNAL_PIN);
-  gpio_set_dir(SIGNAL_PIN, GPIO_OUT);
+  
+  pinMode(SIGNAL_PIN, OUTPUT);
 
   // Set up power converter
   // On Adafruit Metro, be sure to put the RX/TX switch to RX=0, TX=1
@@ -181,11 +182,8 @@ void setup() {
   currentSense = new MyCurrentSense(adc_engine->phases, 10.0*5.0/3.3, 3.3/2);
 
   // Make sure the ADC engine runs AND collects input before going into FOC intiailization.
-  pwm_clear_irq(converter->slice_num);
-  pwm_set_irq_enabled(converter->slice_num, true);
 
-  irq_add_shared_handler(PWM_DEFAULT_IRQ_NUM(), kickOffAdcConversion, 128);
-  irq_set_enabled(PWM_DEFAULT_IRQ_NUM(), true);
+  converter_set_cycle_handler(converter, kickOffAdcConversion);
 
   // Wait for current sensing to work
   for(int i = 0; i < 1000; i++) {
@@ -193,16 +191,12 @@ void setup() {
     Serial.println();
     Serial.printf("Engine health: last_control_count=%d last_transfer_count=%d", adc_engine->last_control_count, adc_engine->last_transfer_count);
     Serial.println();
-    Serial.printf("DMA transfer count: control=%d, transfer=%d", 
-      dma_channel_hw_addr(adc_engine->dma_control_channel)->transfer_count,
-      dma_channel_hw_addr(adc_engine->dma_transfer_channel)->transfer_count);
-    Serial.println();
     supply_sensor_update(supply_sensor);
     Serial.printf("Battery current: %d or %f", adc_engine->i_bat, supply_sensor->i_battery);
     Serial.println();
     Serial.printf("Phase current A: %d or %f", adc_engine->phases[0], currentSense->getPhaseCurrents().a);
     Serial.println();
-    busy_wait_ms(1);
+    delay(1);
   }
 
   do {
@@ -234,7 +228,7 @@ void setup() {
   converter_set_state(converter, off);
   for(int n = 0; n < 100; n++) {
     supply_sensor_update(supply_sensor);
-    sleep_ms(1);
+    delay(1);
   }
   supply_sensor->i_battery_offset = supply_sensor->i_battery_raw;
   Serial.printf("Set battery current measurement offset to %f V\n", supply_sensor->i_battery_offset);
@@ -336,7 +330,7 @@ LowPassFilter lp_shaft_velocity = LowPassFilter(0.01);
 
 void loop() {
 
-  gpio_put(SIGNAL_PIN, ((int) (motor->electrical_angle / M_PI) % 2) == 0);
+  digitalWrite(SIGNAL_PIN, ((int) (motor->electrical_angle / M_PI) % 2) == 0);
 
   if(initOk) {
 

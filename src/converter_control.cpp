@@ -43,7 +43,7 @@ void converter_control_do(converter_control_t* converter_control, converter_t* c
   } else {
     if(converter->state == consuming && supply_sensor->v_motor >= converter_control->target_voltage
         || converter->state == charging && supply_sensor->v_motor <= converter_control->target_voltage
-        || time_us_32() - converter->last_activated > 1000) {
+        || micros() - converter->last_activated > 1000) {
         converter_set_state(converter, off);
         // Take note of the voltage we reached as a basis for future adjustments
         converter_control->last_voltage_reached = supply_sensor->v_motor;
