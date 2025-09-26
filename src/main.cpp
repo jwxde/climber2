@@ -7,7 +7,11 @@
 #include "converter.h"
 #include "converter_control.h"
 
+#if TARGET_RP2350
 #define SIGNAL_PIN D22
+#else
+#define SIGNAL_PIN D12
+#endif
 
 // We construct these later so that we can debug output
 
@@ -136,10 +140,10 @@ void setup() {
   SPI.setSCK(D10); // SCK
   SPI.setTX(D11); // MOSI
   #else
-  SPI.setMISO(D8); // MISO
-  SPI.setSSEL(D9); // CS
-  SPI.setSCLK(D10); // SCK
-  SPI.setMOSI(D11); // MOSI
+  SPI.setMISO(PC11); // MISO
+  SPI.setSSEL(PA15); // CS
+  SPI.setSCLK(PC10); // SCK
+  SPI.setMOSI(PC12); // MOSI
   #endif
 
   // Does SimpleFOC take care of handling CS?
@@ -170,7 +174,7 @@ void setup() {
 
   SimpleFOCDebug::enable(&Serial);
 
-  // TODO: Do we need Arduino pin numbers here or can we use the GPIO numbers directly?
+  // Do we need Arduino pin numbers here or can we use the GPIO numbers directly?
   // These pin numbers go into Arduino functions like digitalWrite, so they need to be Arduino pin numbers.
   // But translation is not necessary for RP2350.
   driver = new BLDCDriver3PWM(D2, D4, D6, D3, D5, D7);
@@ -186,7 +190,7 @@ void setup() {
   converter_set_cycle_handler(converter, kickOffAdcConversion);
 
   // Wait for current sensing to work
-  for(int i = 0; i < 1000; i++) {
+  for(int i = 0; i < 0; i++) {
     Serial.printf("Engine health: cycles=%d cycle_overlaps=%d sync_losses=%d", adc_engine->cycles, adc_engine->cycle_overlaps, adc_engine->sync_losses);
     Serial.println();
     Serial.printf("Engine health: last_control_count=%d last_transfer_count=%d", adc_engine->last_control_count, adc_engine->last_transfer_count);
@@ -200,7 +204,10 @@ void setup() {
   }
 
   do {
+    Serial.println("Initializing FOC");
     initOk = initFOC();
+    Serial.printf("Intialization result: %d", initOk);
+    Serial.println();
   } while(Serial && !initOk);
 
   commander = new Commander(Serial, '\r');
