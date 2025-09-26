@@ -7,11 +7,9 @@
 #include "converter.h"
 #include "converter_control.h"
 
-// For convverter
+// For converter
 
 #include <hardware/pwm.h>
-
-#include <current_sense/hardware_specific/rp2040/rp2040_mcu.h>
 
 #define SIGNAL_PIN D22
 
