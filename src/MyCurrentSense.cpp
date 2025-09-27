@@ -30,7 +30,7 @@ int MyCurrentSense::init() {
             offset_ia += raw_values[pinA];
             offset_ib += raw_values[pinB];
             offset_ic += raw_values[pinC];
-            delay(50);
+            delayMicroseconds(50);
         }
         offset_ia = offset_ia*3.3/4096/1000;
         offset_ib = offset_ib*3.3/4096/1000;

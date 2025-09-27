@@ -129,25 +129,47 @@ void setup() {
 
   Serial.printf("hi there\n");
 
-  // Initialize SPI to fit our needs before FOC code does it
-  // we are using SPI unit 1 on the RP2350 which confusingly is called SPI instead of SPI1.
+  // Initialize SPI to fit our needs before FOC code does it when we call MagneticSensorSPI::init.
+  // This has a default argument that points at the default SPI instance `SPI` (defined in SPI.cpp).
+  // The default instance is prepopulated with pin settings MOSI, MISO and SCK which are macros
+  // defined as Arduino digital pins 11, 12, 13.
+  // If we want to deviate from this we have to set other pins before MagneticSensorSPI::init calls
+  // SPIClass::begin.
+
+  #if ARDUINO_ADAFRUIT_METRO_RP2350
+  // We are using SPI unit 1 on the RP2350 which confusingly is called SPI instead of SPI1.
   // Presumably because SPI unit 0 is attached to the ISP header.
   // See .platformio/packages/framework-arduinopico/variants/adafruit_metro_rp2350/pins_arduino.h
-
-  #if TARGET_RP2350
-  SPI.setRX(D8); // MISO
-  SPI.setCS(D9); // CS
-  SPI.setSCK(D10); // SCK
+  // TODO: How is the SPI peripheral selected? Does the Arduino framework do it automatically
+  // based on the pins?
   SPI.setTX(D11); // MOSI
-  #else
-  SPI.setMISO(PC11); // MISO
-  SPI.setSSEL(PA15); // CS
-  SPI.setSCLK(PC10); // SCK
+  SPI.setRX(D8); // MISO
+  SPI.setSCK(D10); // SCK
+  SPI.setCS(D9); // CS
+  #endif
+
+  #if ARDUINO_NUCLEO_G474RE
+  // There are three SPI peripherals. We need to make sure that all pins belong to the same
+  // peripheral and that the right one is used.
+  // We are using SPI3 instead of SPI0 so that we use 5V tolerant pins and can run the sensor
+  // at 5V.
+  // How is the peripheral selected?
+  // I.e. where is SPI._spi.handle.Instance set?
+  // This happens in function spi_init defined in .platformio/packages/framework-arduinoststm32/libraries/SPI/src/utility/spi_com.c.
+  // This function is called by SPIClass::begin. If it can not figure out a unique SPI peripheral
+  // from the pin settings, it will complain via core_debug and leave the instance set to 0.
+  // Unfortunately, we don't see the complaint.
+  // Setting the SSEL messes up the algorithm because this could be either SPI1 or SPI3.
+  // As MagneticSensorSPI does the CS directly (i.e. not via the SPI peripheral), we are better off
+  // NOT setting this pin.
   SPI.setMOSI(PC12); // MOSI
+  SPI.setMISO(PC11); // MISO
+  SPI.setSCLK(PC10); // SCK
+  // SPI.setSSEL(PA15); // CS
   #endif
 
   // Does SimpleFOC take care of handling CS?
-  SPI.begin();
+  // SPI.begin();
 
   // Set up cycle indicator signal
 
