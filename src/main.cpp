@@ -196,7 +196,7 @@ void setup() {
 
   SimpleFOCDebug::enable(&Serial);
 
-  #if TARGET_RP2350
+  #if ARDUINO_ADAFRUIT_METRO_RP2350
   // Do we need Arduino pin numbers here or can we use the GPIO numbers directly?
   // These pin numbers go into Arduino functions like digitalWrite, so they need to be Arduino pin numbers.
   // But translation is not necessary for RP2350.
@@ -206,7 +206,7 @@ void setup() {
   sensor = new MagneticSensorSPI(AS5048_SPI, D9);
   #endif
 
-  #if STM32G474xx
+  #if ARDUINO_NUCLEO_G474RE
   // Pin identification: All pin ids provided here will have digitalPinToPinName applied to them.
   // I.e. the pin id will be used as in index into the digitalPin array.
   // The values of that array then should be the STM32 PIN ids, I.e. (port number << 4) | pin.

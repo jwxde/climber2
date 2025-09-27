@@ -1,4 +1,4 @@
-#if STM32G474xx
+#if ARDUINO_NUCLEO_G474RE
 
 #include "adc_engine.h"
 #include <cstdlib>

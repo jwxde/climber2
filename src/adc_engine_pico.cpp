@@ -1,4 +1,4 @@
-#if TARGET_RP2350
+#if ARDUINO_ADAFRUIT_METRO_RP2350
 
 #include "adc_engine.h"
 #include <cstdlib>
