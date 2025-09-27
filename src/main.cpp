@@ -174,6 +174,7 @@ void setup() {
 
   SimpleFOCDebug::enable(&Serial);
 
+  #if TARGET_RP2350
   // Do we need Arduino pin numbers here or can we use the GPIO numbers directly?
   // These pin numbers go into Arduino functions like digitalWrite, so they need to be Arduino pin numbers.
   // But translation is not necessary for RP2350.
@@ -181,6 +182,20 @@ void setup() {
   // Our motor has Kv about 50 rpm/V and L about 150 uH. Resistance wire to wire is 0.6 Ohms.
   motor = new BLDCMotor(6, 0.6, 50, 0.000150);
   sensor = new MagneticSensorSPI(AS5048_SPI, D9);
+  #endif
+
+  #if STM32G474xx
+  // Pin identification: All pin ids provided here will have digitalPinToPinName applied to them.
+  // I.e. the pin id will be used as in index into the digitalPin array.
+  // The values of that array then should be the STM32 PIN ids, I.e. (port number << 4) | pin.
+  // So we can write either pinNametoDigitalPin(PA_15) or PA15 or D20.
+  // We use TIM1, PA8, PA9, PA10 for motor PWM
+  driver = new BLDCDriver3PWM(D7, D8, D2, D6, D9, D3);
+  sensor = new MagneticSensorSPI(AS5048_SPI, PA15);
+  #endif
+
+  // Our motor has Kv about 50 rpm/V and L about 150 uH. Resistance wire to wire is 0.6 Ohms.
+  motor = new BLDCMotor(6, 0.6, 50, 0.000150);
   // We have ACS712 hall sensors which we sample with 8 bit resolution.
   // We run the sensors at 3.3 V and have the 712 20 T type which has nominally 100 mV/A at 5 V.
   currentSense = new MyCurrentSense(adc_engine->phases, 10.0*5.0/3.3, 3.3/2);
@@ -239,8 +254,7 @@ void setup() {
   }
   supply_sensor->i_battery_offset = supply_sensor->i_battery_raw;
   Serial.printf("Set battery current measurement offset to %f V\n", supply_sensor->i_battery_offset);
-  converter_set_state
-(converter, consuming);
+  converter_set_state(converter, consuming);
 
   // Second round of FOC to find battery current polarity
   // Create some power consumption by 
