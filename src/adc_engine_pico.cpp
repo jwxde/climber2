@@ -14,11 +14,24 @@
 #define UM 5
 
 struct engine_data {
+    int sequence_length;
+    /**
+     * List of ADC channel numbers to be sampled.
+     * Channel numbers are assumed to be in the interval [0, 7].
+     */
+    int* sequence;
+    uint32_t* adc_commands;
+    uint16_t* buf;
+    uint16_t* buf_read;
+    uint16_t* buf_write;
+
     // DMA channels
     int dma_transfer_channel;
     dma_channel_config_t dma_transfer_config;
     int dma_control_channel;
     dma_channel_config_t dma_control_config;
+    int last_control_count;
+    int last_transfer_count;
 };
 typedef struct engine_data engine_data_t;
 
@@ -28,14 +41,14 @@ adc_engine_t* adc_engine_create() {
 
     e->implementation_data = ed;
 
-    e->sequence_length = 16;
-    e->sequence = (int*) malloc(sizeof(int)*e->sequence_length);
-    e->adc_commands = (uint32_t*) malloc(sizeof(uint32_t)*e->sequence_length);
+    ed->sequence_length = 16;
+    ed->sequence = (int*) malloc(sizeof(int)*ed->sequence_length);
+    ed->adc_commands = (uint32_t*) malloc(sizeof(uint32_t)*ed->sequence_length);
     int sequence[] = { IB, PA, IB, PB, IB, PC, IB, UM};
-    for(int i = 0; i < e->sequence_length; i ++) {
-        e->sequence[i] = sequence[i % 8];
+    for(int i = 0; i < ed->sequence_length; i ++) {
+        ed->sequence[i] = sequence[i % 8];
     }
-    e->buf = (uint16_t*) malloc(sizeof(uint16_t)*e->sequence_length*2);
+    ed->buf = (uint16_t*) malloc(sizeof(uint16_t)*ed->sequence_length*2);
 
     return e;
 }
@@ -76,8 +89,8 @@ int adc_engine_init(adc_engine_t* e) {
     // Set up a second DMA channel to configure the ADC for sampling
     // The ADC is triggered to act by writing a suitable value to its CS register.
 
-    for(int i = 0; i < e->sequence_length; i++) {
-        e->adc_commands[i] = (e->sequence[i] << ADC_CS_AINSEL_LSB) & ADC_CS_AINSEL_BITS | ADC_CS_START_ONCE_BITS | ADC_CS_ERR_STICKY_BITS | ADC_CS_EN_BITS;
+    for(int i = 0; i < ed->sequence_length; i++) {
+        ed->adc_commands[i] = (ed->sequence[i] << ADC_CS_AINSEL_LSB) & ADC_CS_AINSEL_BITS | ADC_CS_START_ONCE_BITS | ADC_CS_ERR_STICKY_BITS | ADC_CS_EN_BITS;
     }
 
     ed->dma_control_channel = dma_claim_unused_channel(true);
@@ -91,7 +104,7 @@ int adc_engine_init(adc_engine_t* e) {
     // We start a new conversion as soon as the previous one is finished
     channel_config_set_dreq(&ed->dma_control_config, DREQ_ADC);
 
-    e->buf_write = NULL;
+    ed->buf_write = NULL;
 
     e->cycles = 0;
     e->cycle_overlaps = 0;
@@ -107,8 +120,8 @@ bool adc_engine_run(adc_engine_t* e) {
     // Did previous runs finish?
     uint32_t control_counts = dma_channel_hw_addr(ed->dma_control_channel)->transfer_count;
     uint32_t transfer_counts = dma_channel_hw_addr(ed->dma_transfer_channel)->transfer_count;
-    e->last_control_count = control_counts;
-    e->last_transfer_count = transfer_counts;
+    ed->last_control_count = control_counts;
+    ed->last_transfer_count = transfer_counts;
 
     e->cycles++;
 
@@ -121,41 +134,43 @@ bool adc_engine_run(adc_engine_t* e) {
     } 
 
     // Make sure that data will be transferred to the next buffer
-    if(e->buf_write != NULL) {
-        e->buf_read = e->buf_write;
-        e->buf_write += e->sequence_length;
-        if(e->buf_write >= e->buf + 2 * e->sequence_length) e->buf_write = e->buf;
+    if(ed->buf_write != NULL) {
+        ed->buf_read = ed->buf_write;
+        ed->buf_write += ed->sequence_length;
+        if(ed->buf_write >= ed->buf + 2 * ed->sequence_length) ed->buf_write = ed->buf;
     } else {
-        e->buf_write = e->buf;
-        e->buf_read = e->buf;
+        ed->buf_write = ed->buf;
+        ed->buf_read = ed->buf;
     }
     dma_channel_configure(ed->dma_transfer_channel,
         &ed->dma_transfer_config, 
-        e->buf_write,         // dest
+        ed->buf_write,         // dest
         &adc_hw->fifo,  // source
-        e->sequence_length,   // count
+        ed->sequence_length,   // count
         true // start once the first DREQ is seen           
     );
     dma_channel_configure(ed->dma_control_channel,
         &ed->dma_control_config,
         &adc_hw->cs,
-        e->adc_commands + 1, // The first command will be written manually below to kick off everything
-        e->sequence_length -1,
+        ed->adc_commands + 1, // The first command will be written manually below to kick off everything
+        ed->sequence_length -1,
         true // start once the first DREQ is seen
     );
     // Kick off the ADC by writing the first command
-    adc_hw->cs = e->adc_commands[0];
+    adc_hw->cs = ed->adc_commands[0];
 
     return true;
 }
 
 void adc_engine_collect(adc_engine_t* e) {
+    engine_data_t *ed = (engine_data_t*) e->implementation_data;
+
     int v[] = {0, 0, 0, 0, 0, 0, 0, 0};
     int n[] = {0, 0, 0, 0, 0, 0, 0, 0};
     long i2 = 0;
-    for(int i = 0; i < e->sequence_length; i++) {
-        int c = e->sequence[i];
-        int val = e->buf_read[i];
+    for(int i = 0; i < ed->sequence_length; i++) {
+        int c = ed->sequence[i];
+        int val = ed->buf_read[i];
         // TODO: Check whether value is usable
         v[c] += val;
         n[c] += 1;

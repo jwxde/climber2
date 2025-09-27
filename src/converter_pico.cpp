@@ -6,16 +6,21 @@
 #include <hardware/pwm.h>
 #include <hardware/timer.h>
 
+#include <Arduino.h>
+
+typedef struct converter_data {
+  int slice_num;
+} converter_data_t;
+
 static converter_t c1;
+static converter_data_t cd1;
 
 converter_t* converter_create(int pwm_pin, int enable_pin) {
   converter_t* converter = &c1;
+  converter->implementation_data = &cd1;
+
   converter->pwm_pin = pwm_pin;
-  converter->slice_num = pwm_gpio_to_slice_num(converter->pwm_pin);
   converter->enable_pin = enable_pin;
-  if(converter->slice_num != pwm_gpio_to_slice_num(converter->enable_pin)) {
-    // BAD, TODO: DO something
-  }
   return converter;
 }
 
@@ -29,13 +34,17 @@ converter_t* converter_create(int pwm_pin, int enable_pin) {
  * formula in both cases.
  */
 void converter_apply(converter_t *converter) {
+  converter_data_t* cd = (converter_data_t*) converter->implementation_data;
+
   if(converter->control > 4.0) converter->control = 4.0;
   if(converter->control < 1.25) converter->control = 1.25;
   converter->level = 0x1000*(1.0 - 1.0/converter->control);
-  pwm_set_chan_level(converter->slice_num, PWM_CHAN_A, converter->level);
+  pwm_set_chan_level(cd->slice_num, PWM_CHAN_A, converter->level);
 }
 
 void converter_set_state(converter_t *c, converter_state state) {
+  converter_data_t* cd = (converter_data_t*) c->implementation_data;
+
   // We only support state transitions from off into one of the non off phases.
   // Why? We want to change the polarity of the PWM signal between consuming
   // and charging states. But the polarity becomes effective immediately
@@ -44,12 +53,12 @@ void converter_set_state(converter_t *c, converter_state state) {
     case off:
       switch(state) {
         case consuming:
-          pwm_set_output_polarity(c->slice_num, true, false);
+          pwm_set_output_polarity(cd->slice_num, true, false);
           c->state = consuming;
           c->last_activated = time_us_32();
           break;
         case charging:
-          pwm_set_output_polarity(c->slice_num, false, false);
+          pwm_set_output_polarity(cd->slice_num, false, false);
           c->state = charging;
           c->last_activated = time_us_32();
           break;
@@ -69,7 +78,7 @@ void converter_set_state(converter_t *c, converter_state state) {
       }
   }
   converter_apply(c);
-  pwm_set_chan_level(c->slice_num, PWM_CHAN_B, c->state == converter_state::off ? 0 : 4096);
+  pwm_set_chan_level(cd->slice_num, PWM_CHAN_B, c->state == converter_state::off ? 0 : 4096);
 }
 
 void converter_disable(converter_t* converter) {
@@ -82,7 +91,15 @@ void converter_enable(converter_t* converter) {
   gpio_set_outover(converter->enable_pin, GPIO_OVERRIDE_NORMAL);
 }
 
-void converter_init(converter_t* converter) {
+bool converter_init(converter_t* converter) {
+  converter_data_t* cd = (converter_data_t*) converter->implementation_data;
+
+  cd->slice_num = pwm_gpio_to_slice_num(converter->pwm_pin);
+  if(cd->slice_num != pwm_gpio_to_slice_num(converter->enable_pin)) {
+    Serial.println("PICO-CNV: converter pins are not on the same ADC slice");
+    return false;
+  }
+
   // It is crucial that we set up the PWM to a sane pulse width
   // (too much connection to ground will short our power source)
   // before enabling the half bridge by connecting the output pins
@@ -99,13 +116,13 @@ void converter_init(converter_t* converter) {
  
   // Don't invert the enable pin signal so that we get an off signal
   // by default (for level 0).
-  pwm_set_output_polarity(converter->slice_num, false, false);
+  pwm_set_output_polarity(cd->slice_num, false, false);
   
-  pwm_set_clkdiv_mode(converter->slice_num, PWM_DIV_FREE_RUNNING);
+  pwm_set_clkdiv_mode(cd->slice_num, PWM_DIV_FREE_RUNNING);
   // This will result in roughly 20kHz frequency
-  pwm_set_wrap(converter->slice_num, 4095);
-  pwm_set_clkdiv_int_frac4(converter->slice_num, 2, 0);
-  pwm_set_phase_correct(converter->slice_num, false);
+  pwm_set_wrap(cd->slice_num, 4095);
+  pwm_set_clkdiv_int_frac4(cd->slice_num, 2, 0);
+  pwm_set_phase_correct(cd->slice_num, false);
 
   // Start out with 50% duty cycle so that we get a voltage that is about twice the battery voltage.
   // But do not enable the converter yet.
@@ -115,15 +132,19 @@ void converter_init(converter_t* converter) {
   converter->last_activated = 0;
 
   // Kick off the PWM slice. The SimpleFOC PWM driver will later (re) enable all slices.
-  pwm_set_enabled(converter->slice_num, true);
+  pwm_set_enabled(cd->slice_num, true);
 
   // And let the signal show up on the output pins
   converter_enable(converter);
+
+  return true;
 }
 
 void converter_handle_irq(converter_t* converter) {
-  if(pwm_get_irq_status_mask() && (0x1 << converter->slice_num)) {
-    pwm_clear_irq(converter->slice_num);
+  converter_data_t* cd = (converter_data_t*) converter->implementation_data;
+
+  if(pwm_get_irq_status_mask() && (0x1 << cd->slice_num)) {
+    pwm_clear_irq(cd->slice_num);
     converter->cycle_handler();
   }
 }
@@ -133,11 +154,12 @@ void converter_h1() {
 }
 
 void converter_set_cycle_handler(converter_t *converter, converter_cycle_handler_t f) {
-  
+  converter_data_t* cd = (converter_data_t*) converter->implementation_data;
+ 
   converter->cycle_handler = f;
 
-  pwm_clear_irq(converter->slice_num);
-  pwm_set_irq_enabled(converter->slice_num, true);
+  pwm_clear_irq(cd->slice_num);
+  pwm_set_irq_enabled(cd->slice_num, true);
 
   // TODO: If we ever have more than one converter, pick the right handler here
   irq_add_shared_handler(PWM_DEFAULT_IRQ_NUM(), converter_h1, 128);

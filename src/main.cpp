@@ -177,10 +177,25 @@ void setup() {
   pinMode(SIGNAL_PIN, OUTPUT);
 
   // Set up power converter
-  // On Adafruit Metro, be sure to put the RX/TX switch to RX=0, TX=1
 
+  #if ARDUINO_ADAFRUIT_METRO_RP2350
+  // On Adafruit Metro, be sure to put the RX/TX switch to RX=0, TX=1
   converter = converter_create(D0, D1);
-  converter_init(converter);
+  #endif
+  #if ARDUINO_NUCLEO_G474RE
+  // D5 is PB4, with alternate function TIM3_CH1
+  // D4 is PB5, with alternate function TIM3_CH2
+  converter = converter_create(D5, D4);
+  #endif
+
+  // Enable SimpleFOC debugging because some converter implementations
+  // make use of it.
+  SimpleFOCDebug::enable(&Serial);
+
+  if(!converter_init(converter)) {
+    Serial.println("Problem initializing converter");
+    return;
+  }
   converter_control = converter_control_create();
 
   // Start out with the converter going full throttle
@@ -193,8 +208,6 @@ void setup() {
   adc_engine_init(adc_engine);
 
   supply_sensor = supply_sensor_create(&adc_engine->i_bat, &adc_engine->i_bat2, &adc_engine->v_mot);
-
-  SimpleFOCDebug::enable(&Serial);
 
   #if ARDUINO_ADAFRUIT_METRO_RP2350
   // Do we need Arduino pin numbers here or can we use the GPIO numbers directly?
@@ -229,8 +242,6 @@ void setup() {
   // Wait for current sensing to work
   for(int i = 0; i < 0; i++) {
     Serial.printf("Engine health: cycles=%d cycle_overlaps=%d sync_losses=%d", adc_engine->cycles, adc_engine->cycle_overlaps, adc_engine->sync_losses);
-    Serial.println();
-    Serial.printf("Engine health: last_control_count=%d last_transfer_count=%d", adc_engine->last_control_count, adc_engine->last_transfer_count);
     Serial.println();
     supply_sensor_update(supply_sensor);
     Serial.printf("Battery current: %d or %f", adc_engine->i_bat, supply_sensor->i_battery);
